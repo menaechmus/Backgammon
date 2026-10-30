@@ -159,8 +159,8 @@ export function bestTurn(match, side) {
 // about `cubeNoise` of the game's swing; Easy also plays any move at all
 // `randomTurn` of the time, and is too ready to take a double.
 const LEVELS = {
-  easy: { noise: 0.3, randomTurn: 0.15, cubeNoise: 0.12, takeBias: 0.08 },
-  medium: { noise: 0.1, randomTurn: 0, cubeNoise: 0.05, takeBias: 0.02 },
+  easy: { noise: 0.12, randomTurn: 0.04, cubeNoise: 0.12, takeBias: 0.08 },
+  medium: { noise: 0.05, randomTurn: 0, cubeNoise: 0.05, takeBias: 0.02 },
 };
 
 const levelOf = (match, side) => match.players[side]?.level ?? match.difficulty;

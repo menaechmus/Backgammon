@@ -758,7 +758,7 @@ function winRate(a, b, games) {
 const realRandom = Math.random;
 Math.random = seeded(2026);
 const started = performance.now();
-for (const [a, b, games, atLeast] of [['hard', 'easy', 120, 0.6], ['hard', 'medium', 120, 0.5], ['medium', 'easy', 200, 0.55]]) {
+for (const [a, b, games, atLeast] of [['hard', 'easy', 120, 0.8], ['hard', 'medium', 120, 0.6], ['medium', 'easy', 200, 0.65]]) {
   test(`self-play: ${a} beats ${b} over ${games} games`, () => {
     const rate = winRate(a, b, games);
     notes.push(`${a} vs ${b}: ${(rate * 100).toFixed(1)}% wins for ${a}`);
