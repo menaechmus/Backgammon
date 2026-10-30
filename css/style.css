@@ -289,6 +289,23 @@ button {
 
 .names input::placeholder { color: var(--muted); }
 
+/* One name for a Wi-Fi game, which the other phone sees. */
+.wifi-name {
+  flex: 0 1 220px;
+  min-width: 0;
+  min-height: 40px;
+  padding: 6px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.28);
+  color: var(--ink);
+  font: inherit;
+}
+
+.wifi-name::placeholder { color: var(--muted); }
+.wifi-name.want { border-color: var(--warn); }
+.wifi-name.want::placeholder { color: var(--warn); }
+
 .menu-actions {
   display: grid;
   gap: 10px;
@@ -354,6 +371,9 @@ button {
 }
 
 .score.active { border-color: var(--gold); }
+
+/* A Wi-Fi player whose phone is out of touch. */
+.score.away { opacity: 0.45; }
 
 /* A dot in the colour of the side's checkers. */
 .score i {
@@ -718,6 +738,94 @@ button {
   display: grid;
   gap: 10px;
 }
+
+/* The Wi-Fi box: the host's code as four tiles, the code typed to join, and
+   who is in the game. */
+.wifi-code {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+}
+
+.wifi-code span {
+  display: grid;
+  place-items: center;
+  width: 50px;
+  height: 58px;
+  border-radius: 8px;
+  background: var(--paper);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  color: #1d1d1f;
+  font: 700 1.7rem Georgia, 'Times New Roman', serif;
+}
+
+.wifi-code span:nth-child(odd) { transform: rotate(-3deg); }
+.wifi-code span:nth-child(even) { transform: rotate(2.5deg) translateY(2px); }
+
+.join-code {
+  justify-self: center;
+  width: 8.5em;
+  min-height: 52px;
+  padding: 6px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.3);
+  color: var(--ink);
+  font: inherit;
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: 0.3em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.join-code::placeholder {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.btn.share {
+  justify-self: center;
+  min-height: 40px;
+  padding: 6px 16px;
+}
+
+.wifi-players {
+  display: grid;
+  gap: 4px;
+  padding: 0;
+  list-style: none;
+  text-align: left;
+}
+
+.wifi-players li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 2px 12px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.28);
+}
+
+.wifi-players li.away { opacity: 0.45; }
+
+.wifi-players i {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--light);
+  box-shadow: inset 0 0 0 1.5px var(--light-rim);
+}
+
+.wifi-players i.side1 {
+  background: var(--dark);
+  box-shadow: inset 0 0 0 1.5px #ffd2d2;
+}
+
+.wifi-status { min-height: 1.4em; color: var(--muted); }
+.wifi-status.warn { color: var(--warn); }
 
 /* "Gammon!" and "Backgammon!", as Cribbage says "Skunk!". */
 .kind {

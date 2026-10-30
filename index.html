@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0b3521">
-<meta name="description" content="Play backgammon in your browser against the computer or a friend on the same device.">
+<meta name="description" content="Play backgammon in your browser against the computer, a friend on the same device, or on two phones over Wi-Fi.">
 <title>Backgammon</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 rx=%2220%22 fill=%22%231c6e45%22/><rect x=%2224%22 y=%2224%22 width=%2252%22 height=%2252%22 rx=%2210%22 fill=%22%23fffdf5%22/><circle cx=%2238%22 cy=%2238%22 r=%227%22 fill=%22%231d1d1f%22/><circle cx=%2250%22 cy=%2250%22 r=%227%22 fill=%22%231d1d1f%22/><circle cx=%2262%22 cy=%2262%22 r=%227%22 fill=%22%231d1d1f%22/></svg>">
 <link rel="stylesheet" href="css/style.css">
@@ -28,6 +28,7 @@
       <div class="choice" data-setting="mode">
         <button data-value="ai">Computer</button>
         <button data-value="local">People</button>
+        <button data-value="net">Wi-Fi</button>
       </div>
     </div>
     <div class="option" id="row-difficulty">
@@ -41,6 +42,10 @@
     <div class="names" id="row-names">
       <input data-name="0" maxlength="12" placeholder="Player 1" aria-label="Player 1 name" autocomplete="off" spellcheck="false">
       <input data-name="1" maxlength="12" placeholder="Player 2" aria-label="Player 2 name" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="option" id="row-wifi-name">
+      <label for="wifi-name">Your name</label>
+      <input id="wifi-name" class="wifi-name" maxlength="12" placeholder="Needed to play" autocomplete="off" spellcheck="false">
     </div>
     <div class="option">
       <span>Match to</span>
@@ -77,6 +82,10 @@
   <div class="menu-actions">
     <button id="btn-resume" class="btn primary" hidden>Resume match</button>
     <button id="btn-new" class="btn primary">New match</button>
+    <div class="row" id="row-wifi">
+      <button id="btn-host" class="btn primary">Host a game</button>
+      <button id="btn-join" class="btn primary">Join a game</button>
+    </div>
     <div class="row">
       <button id="btn-stats" class="btn">Statistics</button>
       <button id="btn-rules" class="btn">How to play</button>
@@ -118,6 +127,22 @@
   </footer>
 </main>
 
+<div id="wifi" class="overlay" hidden>
+  <div class="dialog">
+    <h2 id="wifi-title">Wi-Fi game</h2>
+    <p id="wifi-text" class="muted"></p>
+    <div id="wifi-code" class="wifi-code" role="img" hidden></div>
+    <input id="join-code" class="join-code" maxlength="4" placeholder="CODE" aria-label="Code" autocomplete="off" autocapitalize="characters" spellcheck="false" hidden>
+    <button id="btn-share" class="btn share" hidden>Share link</button>
+    <ul id="wifi-players" class="wifi-players" aria-label="Players" hidden></ul>
+    <p id="wifi-status" class="wifi-status" aria-live="polite"></p>
+    <div class="row">
+      <button id="btn-wifi-cancel" class="btn">Cancel</button>
+      <button id="btn-wifi-go" class="btn primary">Start</button>
+    </div>
+  </div>
+</div>
+
 <div id="confirm" class="overlay" hidden>
   <div class="dialog">
     <h2 id="confirm-title"></h2>
@@ -158,6 +183,7 @@
       <li><b>The doubling cube.</b> Before rolling you may double the stakes. The other side takes, and owns the cube, so only it may double next; or passes, and loses the game at the stakes before the double. In the Crawford game, the one after a side first comes within a point of winning the match, nobody may double.</li>
       <li><b>Notation.</b> 13/7 moves a checker from point 13 to point 7, counting from the mover's side; bar and off mean the bar and bearing off, and * marks a hit. The points are numbered for the side to play.</li>
     </ol>
+    <p class="muted">Wi-Fi: each of you plays on your own phone. One chooses Wi-Fi on the menu, types a name and taps Host a game; the other chooses Wi-Fi, taps Join a game and enters the four letters on the host's screen, or opens the link the host shares. The host's match length, cube and hints settings apply to both. A phone that drops out comes back by itself, and while it is away the host can play for it.</p>
     <p class="muted">Tap a checker, and the places it may go light up; tap one to move there, or drag the checker. Undo takes back moves until you press Done. Tap anywhere to skip an animation or a celebration. On a keyboard: the arrow keys and Space move checkers, Enter presses the main button, U undoes, D doubles, H asks for a hint and M mutes the sound.</p>
     <button class="btn primary" data-close>Got it</button>
   </div>

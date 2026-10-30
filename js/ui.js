@@ -11,10 +11,12 @@ import { emptyStats, loadStats, recordMatch } from './stats.js';
 import { playSound, setMuted, unlockSound } from './sound.js';
 import { startParty } from './celebrate.js';
 import { setupInput, destKey } from './input.js';
+import { openRoom, joinRoom, cleanCode, CODE_LENGTH } from './net.js';
+import { createHost, createGuest, cleanName, sameState, deniedText, MAX_PLAYERS, NAME_LENGTH } from './wifi.js';
 
 // Shown in the About box. Bump both with every release: a browser still
 // running a cached copy of this file then shows the old number.
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 const RELEASED = '29 October 2026';
 
 const AI_DELAY = 800; // the computer's pause before it rolls, doubles or answers a double
@@ -29,30 +31,34 @@ const SETUP_MS = 700; // from the first checker set out at a new game to the las
 const FLIGHT_MS = 300; // each one's flight from the tray
 const CUBE_MS = 420; // the cube moving
 const CHEER_MS = 3500; // fireworks and confetti before the box appears
-const NAME_LENGTH = 12;
 const SETTINGS_KEY = 'backgammon.settings';
 const GAME_KEY = 'backgammon.game';
 const STATS_KEY = 'backgammon.stats';
+const RECORDED_KEY = 'backgammon.recorded'; // the last Wi-Fi match in this phone's statistics
+const WIFI_KEY = 'backgammon.wifi'; // per tab: this tab's part in a Wi-Fi game, for a reload
+const TOKEN_KEY = 'backgammon.token'; // per tab: how the host knows this tab again
 
 const $ = id => document.getElementById(id);
 
 // ?store=NAME keeps this page's storage under keys of its own, so that the
-// test driver's frames can each be a device of their own.
+// test driver's two frames can be two phones. `tab` storage (sessionStorage)
+// lasts as long as the tab, through reloads.
 const STORE = new URLSearchParams(location.search).get('store');
 const keyed = key => (STORE ? `${key}:${STORE}` : key);
 
-function load(key) {
+function load(key, tab = false) {
   try {
-    return JSON.parse(localStorage.getItem(keyed(key)));
+    return JSON.parse((tab ? sessionStorage : localStorage).getItem(keyed(key)));
   } catch {
     return null;
   }
 }
 
-function store(key, value) {
+function store(key, value, tab = false) {
   try {
-    if (value === null) localStorage.removeItem(keyed(key));
-    else localStorage.setItem(keyed(key), JSON.stringify(value));
+    const place = tab ? sessionStorage : localStorage;
+    if (value === null) place.removeItem(keyed(key));
+    else place.setItem(keyed(key), JSON.stringify(value));
   } catch {
     // Storage can be switched off (private browsing); the game still plays.
   }
@@ -66,7 +72,7 @@ function parseValue(text) {
 
 // Saved settings are only accepted if the menu offers that value.
 function loadSettings() {
-  const settings = { mode: 'ai', difficulty: 'medium', names: ['', ''], target: 5, cube: true, hints: true, sound: true };
+  const settings = { mode: 'ai', difficulty: 'medium', names: ['', ''], wifiName: '', target: 5, cube: true, hints: true, sound: true };
   const saved = load(SETTINGS_KEY);
   for (const group of document.querySelectorAll('.choice[data-setting]')) {
     const key = group.dataset.setting;
@@ -76,6 +82,7 @@ function loadSettings() {
   if (Array.isArray(saved?.names)) {
     settings.names = settings.names.map((name, i) => (typeof saved.names[i] === 'string' ? saved.names[i].slice(0, NAME_LENGTH) : name));
   }
+  if (typeof saved?.wifiName === 'string') settings.wifiName = saved.wifiName.slice(0, NAME_LENGTH);
   return settings;
 }
 
@@ -99,21 +106,42 @@ let resetArmed = false;
 let confirmed = null; // what the confirm box's button does
 let aiTimer = 0;
 let input = null;
+// A Wi-Fi game (see the section of that name below).
+let session = null; // this phone's part: { role: 'host', host, room, code, trouble } or { role: 'guest', guest, code, players }
+let me = 0; // this phone's side in it
+let away = []; // sides whose phones are out of touch
+let sent = false; // a guest's move is with the host, and not yet answered
+let inbox = []; // moves and states that came during an animation
+let notice = ''; // why the host refused this phone's last move
+let wifiBox = null; // what the Wi-Fi box shows: 'host', 'join' or 'ended'
+let wifiNote = { text: '', warn: false }; // its status line
+let waitingCode = ''; // a shared link's code, while the name is still to type
 
 setMuted(!settings.sound);
 
 // ---- Who is who ---------------------------------------------------------
 
-const isAi = side => match.players[side].ai;
-const nameOf = side => match.players[side].name;
+const wifiGame = () => match?.mode === 'net';
+const isHost = () => wifiGame() && session?.role === 'host';
+const isGuest = () => wifiGame() && session?.role === 'guest';
+const liveWifi = () => Boolean(session) && wifiGame();
+// A guest whose link to the host has gone can only wait for it to come back.
+const linkDown = () => isGuest() && !session.guest.connected;
+
+const isAi = side => Boolean(match.players[side].ai);
+// In a Wi-Fi game each phone calls its own player "You".
+const nameOf = side => (wifiGame() && side === me ? 'You' : match.players[side].name);
 const isYou = side => nameOf(side) === 'You';
 const does = (side, verb) => `${nameOf(side)} ${verb}${isYou(side) ? '' : verb.endsWith('s') ? 'es' : 's'}`;
 const whose = side => (isYou(side) ? 'Your' : `${nameOf(side)}'s`);
 const capital = text => text[0].toUpperCase() + text.slice(1);
-// The side drawn at the bottom of the board.
-const bottom = () => 0;
-const personWon = () => !isAi(match.winner);
+// The side drawn at the bottom of the board: on Wi-Fi, this phone's.
+const bottom = () => (wifiGame() ? me : 0);
+// Whether a person won: in a Wi-Fi game, this phone's person.
+const personWon = () => (wifiGame() ? match.winner === me : !isAi(match.winner));
 const cubeInUse = () => match.cubeOn && match.target > 1;
+// Hints: in a Wi-Fi game the host's choice, for both; otherwise the menu's.
+const hintsOn = () => (wifiGame() && match.rules ? match.rules.hints : settings.hints);
 
 // The side that must act now: to roll or move, or to answer a double.
 function actor() {
@@ -123,7 +151,15 @@ function actor() {
   return null;
 }
 
-const canAct = () => actor() !== null && !isAi(actor()) && !show;
+const canAct = () => actor() !== null && !isAi(actor()) && !show && (!wifiGame() || (actor() === me && !sent && !linkDown()));
+
+// The side the host may act for: the other phone's, when it is out of touch
+// and must act.
+function standIn() {
+  if (!isHost() || show) return null;
+  const side = actor();
+  return side !== null && side !== me && away[side] ? side : null;
+}
 
 const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -363,6 +399,9 @@ function render() {
     box.querySelector('.points').textContent = match.score[side];
     box.querySelector('.pips').textContent = `${pipCount(board, side)} pips`;
     box.classList.toggle('active', now === side);
+    // A Wi-Fi player whose phone is out of touch is dimmed; on a guest's
+    // phone, the host when the link to it has gone.
+    box.classList.toggle('away', wifiGame() && (Boolean(away[side]) || (side === 0 && linkDown())));
   });
 
   // The points are numbered for the side to act, as moves are written.
@@ -390,7 +429,7 @@ function render() {
   for (const [id, cube] of [['btn-main', ['roll', 'take']], ['btn-second', ['double', 'pass']]]) {
     $(id).classList.toggle('tip', Boolean(tip?.cube) && cube.includes(tip.cube));
   }
-  $('btn-hint').hidden = !settings.hints;
+  $('btn-hint').hidden = !hintsOn();
   $('btn-hint').disabled = !acting;
   $('btn-sound').setAttribute('aria-pressed', settings.sound);
 
@@ -406,9 +445,23 @@ const diceText = dice => (dice[0] === dice[1] ? `double ${dice[0]}s` : `${dice[0
 // What the prompt says, and whether as a warning.
 function promptText() {
   if (show) return [show.prompt ?? '', false];
+  if (wifiGame() && match.phase !== 'over') {
+    const host = match.players[0].name;
+    if (linkDown()) return [`Lost touch with ${host}'s phone. Trying again…`, true];
+    if (sent) return ['Sent. Waiting for the host…', false];
+    if (isHost() && !session.room) return session.trouble ? [`${session.trouble} Trying again…`, true] : ['Opening the game to the other phone…', false];
+    if (notice) return [notice, true];
+    const standing = standIn();
+    if (standing !== null) return [`${nameOf(standing)}'s phone is out of touch. Wait for it, or press the button to let the computer choose for ${nameOf(standing)}.`, true];
+    const waiting = actor();
+    if (waiting !== null && waiting !== me) {
+      if (away[waiting]) return [`${whose(waiting)} turn, but ${nameOf(waiting)}'s phone is out of touch.`, false];
+      return [match.phase === 'doubled' ? `${nameOf(waiting)} is thinking about your double…` : `${whose(waiting)} turn.`, false];
+    }
+  }
   const side = actor();
   if (side === null) return ['', false];
-  const people = match.mode !== 'ai';
+  const people = match.mode === 'local';
   const lead = people ? `${nameOf(side)}: ` : '';
   if (isAi(side)) return [match.phase === 'doubled' ? `${nameOf(side)} is thinking about the double…` : `${nameOf(side)} is thinking…`, false];
   if (match.phase === 'doubled') {
@@ -429,11 +482,15 @@ function promptText() {
   return say(`play ${made.length ? 'the rest of ' : ''}your ${diceText(match.dice)}. Tap a checker, then where it goes.`);
 }
 
+// On the host's phone the main button also acts for the other phone while
+// it is out of touch: the computer's choice, after asking.
 function mainButton(acting) {
-  if (match.phase === 'roll') return ['Roll', acting];
-  if (match.phase === 'move') return ['Done', acting && turnNow().done];
-  if (match.phase === 'doubled') return ['Take', acting];
-  if (match.phase === 'between') return ['Next game', true];
+  const standing = acting ? null : standIn();
+  const forWhom = standing !== null ? ` for ${nameOf(standing)}` : '';
+  if (match.phase === 'roll') return forWhom ? [`Roll${forWhom}`, true] : ['Roll', acting];
+  if (match.phase === 'move') return forWhom ? [`Play${forWhom}`, true] : ['Done', acting && turnNow().done];
+  if (match.phase === 'doubled') return forWhom ? [`Answer${forWhom}`, true] : ['Take', acting];
+  if (match.phase === 'between') return ['Next game', !sent && !linkDown()];
   return ['Match over', false];
 }
 
@@ -466,8 +523,12 @@ function resultHtml() {
     .join('');
   const crawfordNext = !over && match.crawford === null && cubeInUse() && score.some(points => points === target - 1);
   const row = !people ? stats.ai[match.difficulty] : null;
+  // Only the host of a Wi-Fi game can start the next match.
+  const again = isGuest()
+    ? `<p class="muted">Waiting for ${escapeHtml(match.players[0].name)} to start another match.</p>`
+    : '<button class="btn primary" data-do="again">Play again</button>';
   const actions = over
-    ? `<button class="btn primary" data-do="again">Play again</button><div class="row"><button class="btn" data-do="stats">Statistics</button><button class="btn" data-do="menu">Menu</button></div>`
+    ? `${again}<div class="row"><button class="btn" data-do="stats">Statistics</button><button class="btn" data-do="menu">Menu</button></div>`
     : `<button class="btn primary" data-do="next">Next game</button><div class="row"><button class="btn" data-do="menu">Menu</button></div>`;
   return `
     <h2>${escapeHtml(title)}</h2>
@@ -716,7 +777,8 @@ function describe(events, before) {
     const { side } = event;
     if (event.type === 'opening') {
       const [a, b] = event.dice;
-      said.push(a === b ? `Both roll ${a}.` : `${does(0, 'roll')} ${a} and ${isYou(0) ? 'the computer' : nameOf(1)} ${b}.`);
+      const second = isYou(1) ? 'you' : isAi(1) ? 'the computer' : nameOf(1);
+      said.push(a === b ? `Both roll ${a}.` : `${does(0, 'roll')} ${a} and ${second} ${b}.`);
     } else if (event.type === 'start') {
       said.push(`${nameOf(side)} ${isYou(side) ? 'go' : 'goes'} first with ${event.dice[0]}-${event.dice[1]}.`);
     } else if (event.type === 'roll') {
@@ -749,7 +811,7 @@ function soundEvents(events) {
 }
 
 // What the match looked like before a change.
-const snapshot = () => ({ board: match.board.map(half => [...half]), phase: match.phase, turn: match.turn, gameNo: match.gameNo });
+const snapshot = () => ({ board: match.board.map(half => [...half]), phase: match.phase, turn: match.turn, gameNo: match.gameNo, actor: actor() });
 
 // Runs one action on the match, then shows what it did. `own` is a turn
 // whose checkers were moved here, which need not be shown again.
@@ -759,18 +821,23 @@ function commit(action, own = false) {
   settle(before, own);
 }
 
-// Everything that follows a change to the match: what it says, saving,
-// statistics, then the animation, and after it the sounds, the celebration
-// and the computer's next move.
+// Everything that follows a change to the match, made here or, on a guest's
+// phone in a Wi-Fi game, by the host: what it says, saving, statistics,
+// sending it to the other phone, then the animation, and after it the
+// sounds, the celebration and the computer's next move. While the host looks
+// at the menu its game goes on unseen.
 function settle(before, own = false) {
   input?.cancel();
   made = [];
   picked = null;
   cursor = null;
   tip = null;
+  notice = '';
   messages = describe(match.events, before);
-  store(GAME_KEY, match.phase === 'over' ? null : match);
+  if (!isGuest()) store(GAME_KEY, match.phase === 'over' ? null : match);
   if (match.phase === 'over') record();
+  if (isHost()) session.host.share(match);
+  if (wifiGame() && !$('table').hidden) alertTurn(before);
   const steps = $('table').hidden || reducedMotion() ? [] : stepsFor(match.events, own);
   if (steps.length) {
     runShow(steps, before);
@@ -781,15 +848,22 @@ function settle(before, own = false) {
 }
 
 // After a change has been shown: the end of the match, the board as it now
-// is, and the computer's next move.
+// is, anything that arrived meanwhile, and the computer's next move.
 function finish() {
   if (match.phase === 'over' && !$('table').hidden) playSound(personWon() ? 'win' : 'lose', 0.2);
   celebrate();
   render();
+  drainInbox();
   scheduleAi();
 }
 
+// A finished match counts once in this phone's statistics, though the last
+// state of a Wi-Fi match can reach a phone more than once.
 function record() {
+  if (wifiGame()) {
+    if (load(RECORDED_KEY) === match.id) return;
+    store(RECORDED_KEY, match.id);
+  }
   recordMatch(stats, match);
   store(STATS_KEY, stats);
 }
@@ -823,7 +897,7 @@ function stopParty() {
 // rolling, then playing its roll.
 function scheduleAi() {
   clearTimeout(aiTimer);
-  if (!match || show || $('table').hidden) return;
+  if (!match || show || isGuest() || $('table').hidden) return;
   const side = actor();
   if (side === null || !isAi(side)) return;
   const phase = match.phase;
@@ -835,12 +909,22 @@ function scheduleAi() {
   }, phase === 'move' ? AI_MOVE_DELAY : AI_DELAY);
 }
 
-// A move by the person who must act here.
+// A move by the person who must act here: run here, or on a guest's phone in
+// a Wi-Fi game sent to the host, whose answer comes back as the next state or
+// as a refusal. The checkers a guest moved stay where they are meanwhile.
 function act(move) {
+  if (isGuest()) {
+    notice = '';
+    sent = session.guest.send(move);
+    render();
+    return;
+  }
   const side = actor();
   commit(() => apply(side, move), move.t === 'play');
 }
 
+// A move made by `side`, from this phone or (on the host's) the other. `next`
+// starts the next game only from the game the phone was looking at.
 function apply(side, move) {
   if (move.t === 'roll') roll(match, side);
   else if (move.t === 'double') double(match, side);
@@ -894,10 +978,14 @@ function undo() {
 function onMain() {
   if (show) return;
   if (match.phase === 'between') {
-    act({ t: 'next', game: match.gameNo });
+    if (!sent && !linkDown()) act({ t: 'next', game: match.gameNo });
     return;
   }
-  if (!canAct()) return;
+  if (!canAct()) {
+    const side = standIn();
+    if (side !== null) playFor(side);
+    return;
+  }
   if (match.phase === 'roll') act({ t: 'roll' });
   else if (match.phase === 'doubled') act({ t: 'take' });
   else if (match.phase === 'move' && turnNow().done) act({ t: 'play', moves: made.map(move => [move.from, move.to]) });
@@ -913,7 +1001,7 @@ function onSecond() {
 // A hint during a turn shows the best play for the whole roll, so any
 // checkers already moved go back first.
 function onHint() {
-  if (!settings.hints || !canAct()) return;
+  if (!hintsOn() || !canAct()) return;
   made = [];
   picked = null;
   tip = hint(match, actor());
@@ -964,6 +1052,482 @@ function confirmFirst(title, text, button, action) {
   $('btn-confirm').textContent = button;
   confirmed = action;
   $('confirm').hidden = false;
+}
+
+// On the host's phone, the main button also acts for the other phone while
+// it is out of touch: it rolls, or plays or answers a double as Hard would,
+// after asking. It never doubles for them.
+function playFor(side) {
+  const name = nameOf(side);
+  const verb = match.phase === 'roll' ? 'Roll' : match.phase === 'move' ? 'Play' : 'Answer';
+  confirmFirst(`${verb} for ${name}?`, `${name}'s phone is out of touch. The computer makes its best choice for ${name}.`, verb, () => {
+    if (standIn() !== side) return;
+    commit(() => {
+      if (match.phase === 'roll') roll(match, side);
+      else if (match.phase === 'move') play(match, side, pickTurn(match, side, 'hard').moves);
+      else (shouldTake(match, side, 'hard') ? take : pass)(match, side);
+    });
+  });
+}
+
+// ---- Wi-Fi games ------------------------------------------------------------
+
+// Each person plays on their own phone. The host's phone keeps the real
+// match and runs every move; the other sends its moves and gets the match back
+// after each one (wifi.js), over a direct link between the phones (net.js).
+
+// Moves and states that arrive during an animation wait until it is over.
+function whenIdle(task) {
+  if (show) inbox.push(task);
+  else task();
+}
+
+function drainInbox() {
+  while (inbox.length && !show) inbox.shift()();
+}
+
+// This phone's turn: a chime, and a buzz where the phone can.
+function alertTurn(before) {
+  if (actor() !== me || before.actor === me) return;
+  playSound('turn', 0.2);
+  try {
+    navigator.vibrate?.(120);
+  } catch {
+    // no buzz, then
+  }
+}
+
+// The screen stays on while this phone is in a Wi-Fi game, as a phone that
+// sleeps drops out. The browser lets the lock go whenever the page is
+// hidden, so it is asked for again each time the page comes back.
+let wakeLock = null;
+let askingLock = false;
+async function keepAwake(on) {
+  if (!on) {
+    const lock = wakeLock;
+    wakeLock = null;
+    lock?.release().catch(() => {});
+    return;
+  }
+  if (wakeLock || askingLock || document.visibilityState !== 'visible' || !navigator.wakeLock) return;
+  askingLock = true;
+  try {
+    const lock = await navigator.wakeLock.request('screen');
+    if (session) {
+      wakeLock = lock;
+      lock.addEventListener('release', () => {
+        if (wakeLock === lock) wakeLock = null;
+      });
+    } else lock.release().catch(() => {});
+  } catch {
+    // Refused (on low battery, say): the game goes on without it.
+  }
+  askingLock = false;
+}
+
+document.addEventListener('visibilitychange', () => keepAwake(Boolean(session)));
+
+// Hosting and joining need a name, which the other phone sees.
+function needName() {
+  $('wifi-name').classList.add('want');
+  $('wifi-name').focus();
+}
+
+// The host knows this tab again by its token, which lasts as long as the tab.
+function wifiToken() {
+  let token = load(TOKEN_KEY, true);
+  if (typeof token !== 'string' || !token) {
+    token = `${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
+    store(TOKEN_KEY, token, true);
+  }
+  return token;
+}
+
+// What this tab is doing in a Wi-Fi game, so that a reload goes back to it.
+function storeWifi() {
+  store(WIFI_KEY, session ? { role: session.role, code: session.code } : null, true);
+}
+
+// Ends this phone's part in the Wi-Fi game. The host's ends it for both; a
+// guest gives up its seat, which the host keeps in case it comes back.
+function endWifi() {
+  if (!session) return;
+  const ending = session;
+  session = null;
+  storeWifi();
+  if (ending.role === 'host') {
+    // The room outlasts the goodbye a moment: closing it hangs up at once.
+    ending.host.close('ended');
+    setTimeout(() => ending.room?.close(), 1000);
+  } else {
+    ending.guest.leave();
+    if (wifiGame()) match = null;
+  }
+  away = [];
+  sent = false;
+  inbox = [];
+  keepAwake(false);
+}
+
+// Runs `action` once this phone has left its Wi-Fi game, asking first while
+// that game is being played.
+function leaving(action) {
+  const playing = liveWifi() && match.phase !== 'over';
+  if (!playing) {
+    endWifi();
+    action();
+    return;
+  }
+  const hosting = session.role === 'host';
+  confirmFirst(
+    hosting ? 'End the Wi-Fi game?' : 'Leave the Wi-Fi game?',
+    hosting ? 'The other phone will be told that it has ended.' : 'Your seat is kept: join again with the same name to take it back.',
+    hosting ? 'End it' : 'Leave',
+    () => {
+      endWifi();
+      action();
+    },
+  );
+}
+
+// Host a game: a room under a new code, and the box that shows the code and
+// who has joined, where Start begins the match.
+function hostGame() {
+  const name = cleanName(settings.wifiName);
+  if (!name) {
+    needName();
+    return;
+  }
+  leaving(() => {
+    const host = createHost({ name, version: VERSION, onmove: hostMove, onchange: hostChanged });
+    session = { role: 'host', host, room: null, code: '', trouble: '' };
+    keepAwake(true);
+    showWifi('host');
+    reopen(session);
+  });
+}
+
+// Opens the room for `attempt`, a host's session: under its code when it has
+// one (a saved match), otherwise a new one. During a match a failure is tried
+// again; in the box, Try again does that.
+async function reopen(attempt) {
+  try {
+    const room = await openRoom({ code: attempt.code || null, onlink: link => attempt.host.attach(link) });
+    if (session !== attempt) {
+      room.close();
+      return;
+    }
+    Object.assign(attempt, { room, code: room.code, trouble: '' });
+    if (wifiGame() && match.net) match.net.code = room.code;
+    storeWifi();
+  } catch (error) {
+    if (session !== attempt) return;
+    attempt.trouble = error.message;
+    if (wifiGame() && attempt.host.started) setTimeout(() => session === attempt && reopen(attempt), 5000);
+  }
+  drawWifi();
+  if (match && !$('table').hidden) render();
+}
+
+// A Wi-Fi match saved on the host's phone: its code is opened again, and the
+// other phone, which keeps trying, comes back by itself.
+function resumeHosting(saved) {
+  const seats = saved.net?.seats ?? saved.players.map(player => ({ name: player.name, token: null }));
+  const host = createHost({ name: saved.players[0].name, version: VERSION, seats, onmove: hostMove, onchange: hostChanged });
+  session = { role: 'host', host, room: null, code: saved.net?.code ?? '', trouble: '' };
+  me = 0;
+  away = host.away();
+  start(saved);
+  storeWifi();
+  reopen(session);
+}
+
+// The other phone joined, came back or dropped out. The lobby shows it; in a
+// match, it is sent the match again, and its score dims or lights up.
+function hostChanged() {
+  if (session?.role !== 'host') return;
+  if (wifiGame() && session.host.started) {
+    away = session.host.away();
+    match.net = { code: session.code, seats: session.host.saved() };
+    if (match.phase !== 'over') store(GAME_KEY, match);
+    session.host.share(match);
+    if (!$('table').hidden) render();
+  }
+  drawWifi();
+}
+
+// A guest's move, run here as the host's own are, after any animation that
+// is under way. A press of Next game from a phone a game behind is let go.
+function hostMove(seat, move) {
+  if (!isHost() || !session.host.started) return;
+  const attempt = session;
+  whenIdle(() => {
+    if (session !== attempt || !wifiGame()) return;
+    if (move.t === 'next' && (match.phase !== 'between' || move.game !== match.gameNo)) return;
+    const before = snapshot();
+    try {
+      apply(seat, move);
+    } catch (error) {
+      session.host.refuse(seat, error.message);
+      return;
+    }
+    settle(before);
+  });
+}
+
+// Start, in the host's box: a match with the host's length, cube and hints.
+function startWifiGame() {
+  if (session?.role !== 'host' || !session.room || session.host.players().length < 2) return;
+  const players = session.host.begin();
+  const next = newMatch({ mode: 'net', target: settings.target, cube: settings.cube, players });
+  next.rules = { hints: settings.hints };
+  next.net = { code: session.code, seats: session.host.saved() };
+  me = 0;
+  away = session.host.away();
+  hideWifi();
+  start(next, true);
+}
+
+// Play again, on the host's phone: back to the lobby, which someone else may
+// join if the other phone has gone.
+function hostAgain() {
+  session.host.reopen();
+  showWifi('host');
+}
+
+// Join a game: the box asks for the code. A shared link brings its code,
+// and then joins straight away.
+function openJoin(code = '') {
+  if (!cleanName(settings.wifiName)) {
+    waitingCode = code;
+    needName();
+    return;
+  }
+  waitingCode = '';
+  leaving(() => {
+    showWifi('join');
+    $('join-code').value = cleanCode(code);
+    if (code) joinGame();
+  });
+}
+
+async function joinGame() {
+  if (session) return;
+  const code = cleanCode($('join-code').value);
+  if (code.length !== CODE_LENGTH) {
+    wifiStatus(`A code has ${CODE_LENGTH} letters.`, true);
+    return;
+  }
+  const guest = createGuest({
+    name: cleanName(settings.wifiName),
+    token: wifiToken(),
+    version: VERSION,
+    connect: () => joinRoom(code),
+    onmessage: guestHeard,
+    onlink: guestLink,
+  });
+  const attempt = { role: 'guest', guest, code, players: null };
+  session = attempt;
+  keepAwake(true);
+  wifiStatus('');
+  try {
+    await guest.join();
+  } catch (error) {
+    if (session !== attempt) return;
+    session = null;
+    storeWifi(); // a reload no longer tries this game
+    keepAwake(false);
+    wifiStatus(error.message, true);
+    return;
+  }
+  if (session === attempt) storeWifi();
+}
+
+// What the host sends a guest.
+function guestHeard(message) {
+  if (session?.role !== 'guest') return;
+  if (message.t === 'lobby') {
+    session.players = message.players;
+    // After a match, its results stay on screen until the host starts the next.
+    if (wifiGame()) return;
+    me = message.seat;
+    if (!wifiBox) showWifi('join');
+    drawWifi();
+  } else if (message.t === 'state') {
+    const attempt = session;
+    session.players = message.game.players.map((player, seat) => ({ name: player.name, here: !message.away[seat] }));
+    whenIdle(() => session === attempt && guestState(message));
+  } else if (message.t === 'refused') {
+    sent = false;
+    notice = message.message;
+    if (match && !$('table').hidden) render();
+  } else {
+    // The host ended the game, or would not take this phone back.
+    const host = session.players?.[0]?.name ?? 'The host';
+    endWifi();
+    showMenu();
+    showWifi('ended', message.t === 'closed' ? `${host} ended the game.` : deniedText(message, VERSION));
+  }
+}
+
+// The match as the host sends it. A new one starts here, with its checkers
+// set out; the one already here moves on as if the move were made on this
+// phone, without showing again checkers this phone moved itself; one this
+// phone has already only says who is there.
+function guestState({ seat, game: next, away: gone }) {
+  me = seat;
+  away = gone;
+  if (!wifiGame() || match.id !== next.id) {
+    hideWifi();
+    start(next, next.events.some(event => event.type === 'start'));
+    return;
+  }
+  if (sameState(match, next)) {
+    if (!$('table').hidden) render();
+    return;
+  }
+  const before = snapshot();
+  const own = next.events.some(event => event.type === 'move' && event.side === me);
+  match = next;
+  sent = false;
+  settle(before, own);
+}
+
+// The link to the host went, or came back. A move sent just before it went
+// may never be answered: the next state will tell.
+function guestLink(up) {
+  if (!up) sent = false;
+  if (match && !$('table').hidden) render();
+  drawWifi();
+}
+
+// Resume on the menu: back to the Wi-Fi game this phone is in, or else the
+// saved match, which for a Wi-Fi game's host opens its code again.
+function resume() {
+  if (liveWifi()) {
+    $('menu').hidden = true;
+    $('table').hidden = false;
+    render();
+    keepAwake(true);
+    return;
+  }
+  const saved = load(GAME_KEY);
+  if (saved?.v !== 1) return;
+  if (saved.mode === 'net') resumeHosting(saved);
+  else start(saved);
+}
+
+// The address that opens this game's Join box, sent with the phone's own
+// Share sheet, or else copied.
+async function shareLink() {
+  if (session?.role !== 'host' || !session.code) return;
+  const url = new URL(location.pathname, location.origin);
+  url.searchParams.set('join', session.code);
+  const net = new URLSearchParams(location.search).get('net');
+  if (net) url.searchParams.set('net', net);
+  try {
+    if (navigator.share) await navigator.share({ title: 'Backgammon', text: `Join my backgammon game: the code is ${session.code}.`, url: url.href });
+    else {
+      await navigator.clipboard.writeText(url.href);
+      wifiStatus('Link copied. Paste it into a message to the other player.');
+    }
+  } catch (error) {
+    if (error?.name !== 'AbortError') wifiStatus(url.href);
+  }
+}
+
+// The Wi-Fi box: the host's code and lobby, a guest's join and wait, or why
+// a Wi-Fi game ended.
+function showWifi(kind, text = '') {
+  wifiBox = kind;
+  wifiNote = { text, warn: kind === 'ended' };
+  $('wifi').hidden = false;
+  drawWifi();
+  if (kind === 'join' && !session && matchMedia('(pointer: fine)').matches) $('join-code').focus();
+}
+
+function hideWifi() {
+  wifiBox = null;
+  $('wifi').hidden = true;
+}
+
+function wifiStatus(text, warn = false) {
+  wifiNote = { text, warn };
+  drawWifi();
+}
+
+// Cancel (or Leave) gives up the lobby and goes to the menu; after a Wi-Fi
+// game has ended, OK goes there too.
+function cancelWifi() {
+  const ended = wifiBox === 'ended';
+  hideWifi();
+  if (!ended) endWifi();
+  showMenu();
+}
+
+function drawWifi() {
+  if (!wifiBox) return;
+  const hosting = wifiBox === 'host' && session?.role === 'host';
+  const guest = wifiBox === 'join' && session?.role === 'guest' ? session.guest : null;
+  const players = hosting ? session.host.players() : guest ? session.players : null;
+  const owner = players?.[0]?.name ?? 'the host';
+  let title = 'Wi-Fi game';
+  let text = '';
+  let { text: status, warn } = wifiNote;
+  let goLabel = null;
+  let cancel = 'Cancel';
+  let listed = false;
+  if (wifiBox === 'ended') {
+    goLabel = 'OK';
+    cancel = null;
+  } else if (wifiBox === 'host') {
+    title = 'Host a game';
+    if (hosting && session.room) {
+      text = 'On the other phone, choose Wi-Fi, tap Join a game and enter:';
+      listed = true;
+      goLabel = 'Start';
+      if (!status) status = players.length < MAX_PLAYERS ? 'Waiting for the other player to join…' : 'Both here: start when you are ready.';
+    } else if (hosting && session.trouble) {
+      [status, warn] = [session.trouble, true];
+      goLabel = 'Try again';
+    } else if (hosting) text = 'Opening a game…';
+  } else {
+    title = 'Join a game';
+    if (!guest) {
+      text = "Enter the code on the host's screen.";
+      goLabel = 'Join';
+    } else if (guest.connected && players) {
+      text = `You are in ${owner}'s game.`;
+      listed = true;
+      cancel = 'Leave';
+      if (!status) status = `Waiting for ${owner} to start…`;
+    } else if (players) {
+      text = `Lost touch with ${owner}'s phone. Trying again…`;
+      listed = true;
+      cancel = 'Leave';
+    } else text = `Connecting to game ${session.code}…`;
+  }
+  $('wifi-title').textContent = title;
+  $('wifi-text').textContent = text;
+  $('wifi-text').hidden = !text;
+  const code = hosting && session.room ? session.code : '';
+  $('wifi-code').hidden = !code;
+  $('wifi-code').innerHTML = [...code].map(letter => `<span>${letter}</span>`).join('');
+  $('wifi-code').setAttribute('aria-label', `Code ${[...code].join(' ')}`);
+  $('btn-share').hidden = !code;
+  $('join-code').hidden = !(wifiBox === 'join' && !guest);
+  $('wifi-players').hidden = !listed;
+  const mine = hosting ? 0 : me;
+  const entry = (player, seat) =>
+    `<li${player.here ? '' : ' class="away"'}><i class="side${seat}"></i><span>${escapeHtml(player.name)}${seat === mine ? ' <span class="muted">(you)</span>' : ''}</span></li>`;
+  $('wifi-players').innerHTML = listed ? players.map(entry).join('') : '';
+  $('wifi-status').textContent = status;
+  $('wifi-status').classList.toggle('warn', warn);
+  $('btn-wifi-go').hidden = !goLabel;
+  $('btn-wifi-go').textContent = goLabel ?? '';
+  $('btn-wifi-go').disabled = goLabel === 'Start' && (players?.length ?? 0) < MAX_PLAYERS;
+  $('btn-wifi-cancel').hidden = !cancel;
+  $('btn-wifi-cancel').textContent = cancel ?? '';
 }
 
 // ---- The keyboard's cursor ------------------------------------------------
@@ -1025,6 +1589,8 @@ function playersFor() {
   return players;
 }
 
+// A Wi-Fi game goes on while its host looks at the menu: the other phone's
+// moves keep coming. Anything being shown is cut short.
 function showMenu() {
   clearTimeout(aiTimer);
   if (show) {
@@ -1043,17 +1609,24 @@ function showMenu() {
   $('menu').dataset.mode = mode;
   $('row-difficulty').hidden = mode !== 'ai';
   $('row-names').hidden = mode !== 'local';
+  $('row-wifi-name').hidden = mode !== 'net';
+  $('row-wifi').hidden = mode !== 'net';
+  $('btn-new').hidden = mode === 'net';
   $('row-cube').hidden = settings.target === 1;
   for (const field of document.querySelectorAll('[data-name]')) field.value = settings.names[Number(field.dataset.name)];
+  $('wifi-name').value = settings.wifiName;
 
-  const saved = load(GAME_KEY);
-  const canResume = saved?.v === 1 && !['over'].includes(saved.phase) && Array.isArray(saved.board);
+  // Resume goes back to a Wi-Fi game this phone is in, or else to the saved match.
+  const saved = liveWifi() ? null : load(GAME_KEY);
+  const canResume = liveWifi() ? match.phase !== 'over' : saved?.v === 1 && saved.phase !== 'over' && Array.isArray(saved.board);
   $('btn-resume').hidden = !canResume;
-  if (canResume) $('btn-resume').textContent = `Resume match (${saved.score.join('–')}, to ${saved.target})`;
-  $('btn-new').classList.toggle('primary', !canResume);
+  if (liveWifi()) $('btn-resume').textContent = `Back to the Wi-Fi game (${match.score.join('–')})`;
+  else if (canResume) $('btn-resume').textContent = `Resume ${saved.mode === 'net' ? 'Wi-Fi game' : 'match'} (${saved.score.join('–')}, to ${saved.target})`;
+  for (const id of ['btn-new', 'btn-host', 'btn-join']) $(id).classList.toggle('primary', !canResume);
 
   for (const id of ['table', 'gameover', 'confirm']) $(id).hidden = true;
   $('menu').hidden = false;
+  drainInbox();
 }
 
 // `fresh` is a match just begun, whose checkers are set out and opening roll shown.
@@ -1061,21 +1634,30 @@ function start(saved = null, fresh = !saved) {
   stopParty();
   clearTimeout(aiTimer);
   match = saved ?? newMatch({ mode: settings.mode, difficulty: settings.difficulty, target: settings.target, cube: settings.cube, players: playersFor() });
+  if (!wifiGame()) {
+    me = 0;
+    away = [];
+  }
   made = [];
   picked = null;
   cursor = null;
   tip = null;
   messages = [];
+  notice = '';
+  sent = false;
+  inbox = [];
   turns = null;
   show = null;
   drawBoard();
   $('menu').hidden = true;
   $('table').hidden = false;
+  keepAwake(Boolean(session));
   if (fresh) {
-    settle(snapshot());
+    settle({ ...snapshot(), actor: null }); // a new match: whoever starts is told it is their turn
     return;
   }
-  store(GAME_KEY, match);
+  if (!isGuest()) store(GAME_KEY, match);
+  if (isHost()) session.host.share(match);
   render();
   scheduleAi();
 }
@@ -1111,10 +1693,33 @@ for (const field of document.querySelectorAll('[data-name]')) {
   });
 }
 
-$('btn-new').addEventListener('click', () => start());
-$('btn-resume').addEventListener('click', () => {
-  const saved = load(GAME_KEY);
-  if (saved?.v === 1) start(saved);
+$('wifi-name').addEventListener('input', event => {
+  event.target.classList.remove('want');
+  settings.wifiName = event.target.value.slice(0, NAME_LENGTH);
+  store(SETTINGS_KEY, settings);
+});
+
+$('btn-new').addEventListener('click', () => leaving(() => start()));
+$('btn-resume').addEventListener('click', resume);
+$('btn-host').addEventListener('click', hostGame);
+$('btn-join').addEventListener('click', () => openJoin(waitingCode));
+$('btn-share').addEventListener('click', shareLink);
+$('btn-wifi-cancel').addEventListener('click', cancelWifi);
+$('btn-wifi-go').addEventListener('click', () => {
+  if (wifiBox === 'ended') cancelWifi();
+  else if (wifiBox === 'join') joinGame();
+  else if (session?.role === 'host' && !session.room) {
+    session.trouble = '';
+    drawWifi();
+    reopen(session);
+  } else startWifiGame();
+});
+$('join-code').addEventListener('input', event => {
+  event.target.value = cleanCode(event.target.value);
+  if (wifiNote.warn) wifiStatus('');
+});
+$('join-code').addEventListener('keydown', event => {
+  if (event.key === 'Enter') joinGame();
 });
 $('btn-confirm').addEventListener('click', () => {
   $('confirm').hidden = true;
@@ -1165,8 +1770,10 @@ input = setupInput({
 
 $('gameover').addEventListener('click', event => {
   const action = event.target.dataset.do;
-  if (action === 'again') playAgain();
-  else if (action === 'next') onMain();
+  if (action === 'again') {
+    if (isHost()) hostAgain();
+    else playAgain();
+  } else if (action === 'next') onMain();
   else if (action === 'stats') showStats();
   else if (action === 'menu') showMenu();
 });
@@ -1226,6 +1833,10 @@ document.addEventListener(
 
 document.addEventListener('keydown', event => {
   if (event.key === 'Escape') {
+    if (!$('wifi').hidden) {
+      cancelWifi();
+      return;
+    }
     const open = ['rules', 'stats', 'about', 'confirm'].filter(id => !$(id).hidden);
     for (const id of open) $(id).hidden = true;
     if (!open.length && match && !$('table').hidden && (picked !== null || cursor !== null)) {
@@ -1261,3 +1872,24 @@ document.addEventListener('keydown', event => {
 });
 
 showMenu();
+
+// A tab that was in a Wi-Fi game (reloaded, or brought back by the browser)
+// goes straight back to it. A shared link opens the Join box with its code.
+{
+  const was = load(WIFI_KEY, true);
+  const saved = load(GAME_KEY);
+  const address = new URL(location.href);
+  const code = cleanCode(address.searchParams.get('join') ?? '');
+  if (address.searchParams.has('join')) {
+    address.searchParams.delete('join');
+    history.replaceState(null, '', address.href);
+  }
+  if (was?.role === 'host' && saved?.v === 1 && saved.mode === 'net' && saved.phase !== 'over') resumeHosting(saved);
+  else if (was?.role === 'guest' && was.code) openJoin(was.code);
+  else if (code) {
+    settings.mode = 'net';
+    store(SETTINGS_KEY, settings);
+    showMenu();
+    openJoin(code);
+  }
+}
