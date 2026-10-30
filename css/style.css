@@ -1,0 +1,800 @@
+:root {
+  --felt: #1c6e45;
+  --felt-deep: #0b3521;
+  --ink: #f5f1e3;
+  --muted: #b5cbbd;
+  --paper: #fffdf5;
+  --gold: #f6c955;
+  --tip: #9fe8ff;
+  --warn: #ffb4a3;
+  /* The two sides: ivory checkers, and red ones. */
+  --light: #f6f0e1;
+  --light-rim: #8f7f5c;
+  --dark: #b8282b;
+  --dark-rim: #5c0f12;
+  /* The rows of fixed height on the table (bars, buttons, status), which the
+     board shares the screen's height with. */
+  --fixed-rows: 190px;
+  /* The board's width over its height. */
+  --board-shape: 1.2375;
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+html {
+  background: var(--felt-deep);
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  min-height: 100dvh;
+  background: radial-gradient(ellipse at 50% 25%, var(--felt), var(--felt-deep));
+  color: var(--ink);
+  font: 16px/1.4 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+h1, h2, h3, p, figure, ol, ul, dl, dd { margin: 0; }
+
+button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+:focus-visible {
+  outline: 3px solid var(--tip);
+  outline-offset: 2px;
+}
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  max-width: 780px;
+  min-height: 100vh;
+  min-height: 100dvh;
+  margin: 0 auto;
+  padding: max(8px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right))
+    max(10px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+/* Buttons */
+
+.btn {
+  min-height: 48px;
+  padding: 10px 18px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.08);
+  font-weight: 600;
+}
+
+.btn.primary {
+  border-color: var(--gold);
+  background: var(--gold);
+  color: #2b2205;
+}
+
+.btn.danger { color: var(--warn); }
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* The button a cube hint suggests. */
+.btn.tip { animation: glow-button 0.9s ease-in-out infinite alternate; }
+
+@keyframes glow-button {
+  from { box-shadow: 0 0 0 2px var(--tip); }
+  to { box-shadow: 0 0 0 4px var(--tip), 0 0 14px 2px var(--tip); }
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+}
+
+.row > * { flex: 1; }
+
+/* Menu */
+
+.menu {
+  justify-content: center;
+  gap: 24px;
+  max-width: 440px;
+}
+
+.title { text-align: center; }
+
+.title h1 {
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 2.6rem;
+  letter-spacing: 0.02em;
+}
+
+/* Two dice and two checkers, fanned like Cribbage's title cards. */
+.emblem {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 18px;
+  --cw: 50px;
+}
+
+.emblem .piece {
+  position: relative;
+  flex: none;
+  width: var(--cw);
+  height: var(--cw);
+}
+
+.emblem .die svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.5));
+}
+
+.emblem .die rect { fill: var(--paper); }
+.emblem .die circle { fill: #1d1d1f; }
+
+.emblem .checker {
+  border-radius: 50%;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+.emblem .checker.light {
+  background: radial-gradient(circle, var(--light) 0 52%, rgba(0, 0, 0, 0.12) 53% 57%, var(--light) 58%);
+  box-shadow: inset 0 0 0 2px var(--light-rim), 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+.emblem .checker.dark {
+  background: radial-gradient(circle, var(--dark) 0 52%, rgba(255, 255, 255, 0.18) 53% 57%, var(--dark) 58%);
+  box-shadow: inset 0 0 0 2px var(--dark-rim), 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+.emblem .piece:nth-child(1) { transform: rotate(-16deg) translateY(8px); }
+.emblem .piece:nth-child(2) { transform: translateY(-2px); }
+.emblem .piece:nth-child(3) { transform: translateY(-2px); }
+.emblem .piece:nth-child(4) { transform: rotate(14deg) translateY(8px); }
+
+/* Sparkles on the title: small glints that twinkle at the outer corners, half
+   over the felt where they show. Each has its own rhythm, so the pattern never
+   visibly repeats and at most moments few or none are lit. */
+.emblem .piece::before,
+.emblem .piece:first-child::after,
+.emblem .piece:last-child::after {
+  --out: calc(var(--cw) * -0.17); /* centres a glint on a corner */
+  position: absolute;
+  top: var(--out);
+  left: var(--out);
+  width: calc(var(--cw) * 0.34);
+  height: calc(var(--cw) * 0.34);
+  /* A bright centre with one thin ray across and one down. */
+  background:
+    radial-gradient(circle, #fff 0 9%, transparent 24%),
+    radial-gradient(ellipse 50% 6% at center, #ffe9a3 0 35%, transparent 80%),
+    radial-gradient(ellipse 6% 50% at center, #ffe9a3 0 35%, transparent 80%);
+  content: '';
+  opacity: 0;
+  pointer-events: none;
+  animation: twinkle 6.1s ease-in-out -1s infinite;
+}
+
+.emblem .piece:first-child::after {
+  top: auto;
+  bottom: var(--out);
+  animation-duration: 8.3s;
+  animation-delay: -5.2s;
+}
+
+.emblem .piece:nth-child(2)::before {
+  animation-duration: 7.3s;
+  animation-delay: -3.4s;
+}
+
+.emblem .piece:nth-child(3)::before {
+  animation-duration: 5.3s;
+  animation-delay: -2.1s;
+}
+
+.emblem .piece:last-child::before {
+  right: var(--out);
+  left: auto;
+  animation-duration: 8.9s;
+  animation-delay: -6.5s;
+}
+
+.emblem .piece:last-child::after {
+  top: auto;
+  right: var(--out);
+  bottom: var(--out);
+  left: auto;
+  animation-duration: 6.7s;
+  animation-delay: -0.4s;
+}
+
+/* Out of sight for most of the cycle, then a quick grow, turn and fade. */
+@keyframes twinkle {
+  0% { opacity: 0; transform: scale(0.2) rotate(0deg); }
+  5.5% { opacity: 1; transform: scale(1) rotate(30deg); }
+  11%, 100% { opacity: 0; transform: scale(0.2) rotate(60deg); }
+}
+
+.options {
+  display: grid;
+  gap: 12px;
+}
+
+.option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.choice {
+  display: flex;
+  padding: 3px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.28);
+}
+
+.choice button {
+  min-height: 40px;
+  padding: 8px 14px;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--muted);
+}
+
+.choice button[aria-pressed='true'] {
+  background: var(--paper);
+  color: #17402b;
+  font-weight: 600;
+}
+
+/* A name for each of the two people playing on this device. */
+.names {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.names input {
+  min-width: 0;
+  min-height: 42px;
+  padding: 8px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.28);
+  color: var(--ink);
+  font: inherit;
+}
+
+.names input::placeholder { color: var(--muted); }
+
+.menu-actions {
+  display: grid;
+  gap: 10px;
+}
+
+/* Short screens: tighten the menu so its last row of buttons stays in view. */
+@media (max-height: 640px) {
+  .menu { gap: 12px; }
+  .title h1 { font-size: 2rem; }
+  .options { gap: 6px; }
+
+  .emblem {
+    margin-bottom: 8px;
+    --cw: 38px;
+  }
+
+  .choice button {
+    min-height: 36px;
+    padding-block: 6px;
+  }
+
+  .names input {
+    min-height: 36px;
+    padding-block: 5px;
+  }
+}
+
+/* Table */
+
+.topbar {
+  display: flex;
+  /* A last resort for very large text: the scores drop to a second row
+     instead of running off the screen. */
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.icon-btn {
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.28);
+  font-size: 1.2rem;
+}
+
+/* The two scores share the bar equally. Each name sits over its side's pip
+   count, which leaves room for names in full on a phone; a name too long even
+   for that is shortened with an ellipsis. */
+.score {
+  display: flex;
+  flex: 1 1 0;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 44px;
+  padding: 3px 8px;
+  border: 2px solid transparent;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.28);
+}
+
+.score.active { border-color: var(--gold); }
+
+/* A dot in the colour of the side's checkers. */
+.score i {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--light);
+  box-shadow: inset 0 0 0 1.5px var(--light-rim);
+}
+
+.score[data-side='1'] i {
+  background: var(--dark);
+  box-shadow: inset 0 0 0 1.5px #ffd2d2;
+}
+
+/* The score boxes sit in the bar as if they were its own children. */
+.scores { display: contents; }
+
+.score .who {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  line-height: 1.15;
+}
+
+.score .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The side's pip count: how far its checkers still have to go. */
+.score .pips {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.score .points {
+  min-width: 1ch;
+  font-size: 1.25rem;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* The board takes all the height the fixed rows leave, up to the screen's width. */
+.board {
+  width: min(100%, 780px, (100vh - var(--fixed-rows)) * var(--board-shape));
+  margin: 0 auto;
+  touch-action: none;
+}
+
+@supports (height: 1dvh) {
+  .board { width: min(100%, 780px, (100dvh - var(--fixed-rows)) * var(--board-shape)); }
+}
+
+.board svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 12px;
+  background: linear-gradient(#b47c41, #8a5a2b);
+  box-shadow: inset 0 0 0 2px rgba(0, 0, 0, 0.25), 0 2px 6px rgba(0, 0, 0, 0.4);
+}
+
+.board .frame { fill: none; }
+.board .surface { fill: #124a2e; }
+.board .bar,
+.board .tray { fill: rgba(0, 0, 0, 0.24); }
+
+.point.odd { fill: #e3c88f; }
+.point.even { fill: #7a3b22; }
+
+.labels text {
+  fill: rgba(255, 253, 245, 0.8);
+  font: 600 7.5px system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  text-anchor: middle;
+}
+
+.checker > circle:first-child { stroke-width: 1.2; }
+
+.checker.side0 > circle:first-child {
+  fill: var(--light);
+  stroke: var(--light-rim);
+}
+
+.checker.side1 > circle:first-child {
+  fill: var(--dark);
+  stroke: var(--dark-rim);
+}
+
+.checker .inner {
+  fill: none;
+  stroke-width: 1.2;
+}
+
+.checker.side0 .inner { stroke: rgba(0, 0, 0, 0.13); }
+.checker.side1 .inner { stroke: rgba(255, 255, 255, 0.2); }
+
+.checker text {
+  font: 700 11px system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  text-anchor: middle;
+}
+
+.checker.side0 text { fill: #3a2a10; }
+.checker.side1 text { fill: #fff; }
+
+/* A checker that may move, the one picked up, a hint's, and the keyboard's. */
+.checker.movable > circle:first-child {
+  stroke: var(--gold);
+  stroke-width: 1.8;
+}
+
+.checker.picked > circle:first-child {
+  stroke: var(--gold);
+  stroke-width: 3.2;
+}
+
+.checker.picked { filter: drop-shadow(0 0 3px var(--gold)); }
+
+.checker.tip > circle:first-child {
+  stroke: var(--tip);
+  stroke-width: 3;
+}
+
+.checker.cursor > circle:first-child {
+  stroke: var(--tip);
+  stroke-width: 3;
+  stroke-dasharray: 4 2.5;
+}
+
+.checker.lifted { opacity: 0.3; }
+
+.checker.ghost {
+  pointer-events: none;
+  filter: drop-shadow(0 3px 3px rgba(0, 0, 0, 0.5));
+}
+
+/* The places the picked checker may go. */
+.dest {
+  fill: rgba(246, 201, 85, 0.42);
+  stroke: var(--gold);
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+
+.dest.over { fill: rgba(246, 201, 85, 0.8); }
+
+.dest.cursor {
+  stroke: var(--tip);
+  stroke-width: 2.5;
+}
+
+.borne { stroke-width: 0.8; }
+
+.borne.side0 {
+  fill: var(--light);
+  stroke: var(--light-rim);
+}
+
+.borne.side1 {
+  fill: var(--dark);
+  stroke: var(--dark-rim);
+}
+
+/* Dice in the colour of the side that rolled them. */
+.die rect {
+  fill: var(--paper);
+  stroke: rgba(0, 0, 0, 0.35);
+}
+
+.die circle { fill: #1d1d1f; }
+.die.side1 rect { fill: var(--dark); stroke: var(--dark-rim); }
+.die.side1 circle { fill: var(--paper); }
+.die.used { opacity: 0.35; }
+
+.die .face {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.die.rolling .face { animation: tumble 0.16s linear infinite; }
+
+@keyframes tumble {
+  0% { transform: rotate(-18deg) translateY(-1.5px); }
+  50% { transform: rotate(14deg) translateY(1px); }
+  100% { transform: rotate(-18deg) translateY(-1.5px); }
+}
+
+.cube rect {
+  fill: var(--paper);
+  stroke: #2b2205;
+  stroke-width: 1;
+}
+
+.cube text {
+  fill: #1d1d1f;
+  font: 700 13px Georgia, 'Times New Roman', serif;
+  text-anchor: middle;
+}
+
+.cube.offered rect {
+  stroke: var(--gold);
+  stroke-width: 3;
+}
+
+/* In the Crawford game nobody may double. */
+.cube.crawford { opacity: 0.35; }
+
+/* A hint's moves, as arrows. */
+.hints line {
+  stroke: var(--tip);
+  stroke-width: 3;
+  stroke-linecap: round;
+  opacity: 0.9;
+}
+
+.hints marker path { fill: var(--tip); }
+
+/* The status takes the height the board leaves, so on a tall phone the
+   buttons sit at the bottom, within reach of a thumb. */
+.status {
+  display: grid;
+  flex: 1;
+  align-content: start;
+  gap: 2px;
+  min-height: 3em;
+  padding-top: 4px;
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+#prompt { color: var(--muted); }
+#prompt.tip { color: var(--tip); }
+#prompt.warn { color: var(--warn); }
+
+.actions {
+  display: flex;
+  gap: 8px;
+}
+
+.actions .primary { flex: 1; }
+.actions .btn { padding-inline: 14px; }
+
+/* Beside full-size buttons an icon button matches their height. */
+.actions .icon-btn,
+.row .icon-btn {
+  width: 48px;
+  height: auto;
+}
+
+.icon-btn svg {
+  display: block;
+  width: 24px;
+  height: 24px;
+  margin: auto;
+  fill: currentColor;
+}
+
+.icon-btn svg .line {
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-width: 2;
+}
+
+/* The speaker shows sound waves when on and a cross when muted. */
+#btn-sound[aria-pressed='true'] .off,
+#btn-sound[aria-pressed='false'] .on { display: none; }
+#btn-sound[aria-pressed='false'] { color: var(--muted); }
+
+/* A phone on its side: the board down the left, everything else beside it. */
+@media (orientation: landscape) and (max-height: 520px) {
+  .table {
+    display: grid;
+    grid-template: 'board bar' auto 'board status' 1fr 'board actions' auto / auto minmax(190px, 1fr);
+    column-gap: 14px;
+    max-width: none;
+  }
+
+  /* The scores stack beside the menu button so both names fit. */
+  .topbar {
+    display: grid;
+    grid-area: bar;
+    grid-template-columns: auto 1fr;
+    gap: 4px 8px;
+  }
+
+  .topbar .icon-btn { grid-row: span 2; }
+
+  .score {
+    min-height: 36px;
+    padding-block: 1px;
+  }
+
+  .board {
+    grid-area: board;
+    align-self: center;
+    width: min(60vw, (100vh - 20px) * var(--board-shape));
+  }
+
+  @supports (height: 1dvh) {
+    .board { width: min(60vw, (100dvh - 20px) * var(--board-shape)); }
+  }
+
+  .status { grid-area: status; }
+
+  /* Two rows of buttons: the main one on a row of its own. */
+  .actions {
+    display: grid;
+    grid-area: actions;
+    grid-template-columns: auto 1fr 1fr;
+  }
+
+  .actions .primary { grid-column: 1 / -1; }
+  .actions .btn { padding-inline: 10px; }
+}
+
+/* Overlays */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: grid;
+  place-items: center;
+  overflow: auto;
+  padding: 16px;
+  background: rgba(4, 22, 13, 0.8);
+}
+
+.dialog {
+  display: grid;
+  gap: 12px;
+  width: min(100%, 380px);
+  padding: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 16px;
+  background: #134a2f;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  text-align: center;
+}
+
+.dialog.wide {
+  width: min(100%, 520px);
+  text-align: left;
+}
+
+.dialog h2 { font-size: 1.4rem; }
+.dialog a { color: var(--tip); }
+
+.dialog h3 {
+  color: var(--muted);
+  font-size: 0.8rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.stack {
+  display: grid;
+  gap: 10px;
+}
+
+/* "Gammon!" and "Backgammon!", as Cribbage says "Skunk!". */
+.kind {
+  color: var(--gold);
+  font-weight: 700;
+}
+
+.grid {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.grid th,
+.grid td {
+  padding: 5px 4px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  text-align: right;
+}
+
+.grid th:first-child { text-align: left; }
+
+.grid thead th {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 500;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 12px;
+}
+
+.facts dd {
+  font-weight: 600;
+  text-align: right;
+}
+
+.rules {
+  display: grid;
+  gap: 8px;
+  padding-left: 1.2em;
+}
+
+/* Celebration. While a win is celebrated the overlay is see-through and its
+   box invisible; then the backdrop darkens and the box grows into place, in
+   front of the last of the confetti. */
+
+#gameover { transition: background-color 0.4s; }
+#gameover.party { background: transparent; }
+
+#gameover-body {
+  position: relative;
+  z-index: 1;
+  transition: opacity 0.35s, transform 0.35s ease-out;
+}
+
+#gameover.party #gameover-body {
+  visibility: hidden;
+  opacity: 0;
+  transform: scale(0.92);
+}
+
+#party {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

@@ -1,0 +1,792 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Backgammon tests</title>
+<style>
+  body { font: 14px/1.5 ui-monospace, Consolas, monospace; margin: 1rem; background: #111; color: #ddd; }
+  .fail { color: #ff7a7a; }
+  .pass { color: #8fd694; }
+</style>
+</head>
+<body>
+<h1 id="summary">Running…</h1>
+<pre id="out"></pre>
+<script type="module">
+import {
+  BAR, OFF, CHECKERS, startBoard, copyBoard, keyOf, pipCount, isRace, landing, applyMoves, legalTurns, turnState, moveText,
+  newMatch, nextGame, roll, play, double, take, pass, canDouble, winKind, other,
+} from './js/game.js';
+import { BOARD, STACK, BAR_STACK, pointX, isTopRow, checkerXY, barXY, trayXY, diceXY, cubeXY, locate } from './js/board.js';
+import { INPUTS, encode, evaluate, flip, unpackNet, packNet, WIN, WIN_GAMMON, WIN_BACKGAMMON, LOSE_GAMMON, LOSE_BACKGAMMON } from './js/neural.js';
+import { WEIGHTS } from './js/weights.js';
+import { bestTurn, pickTurn, shouldDouble, shouldTake, hint, matchEquity } from './js/ai.js';
+import { emptyStats, loadStats, recordMatch } from './js/stats.js';
+import { SOUNDS, renderSound } from './js/sound.js';
+import { createShow, advance, isOver } from './js/celebrate.js';
+
+const results = [];
+const notes = [];
+
+function test(name, body) {
+  try {
+    body();
+    results.push({ name, ok: true });
+  } catch (error) {
+    results.push({ name, ok: false, error: error.message });
+  }
+}
+
+function equal(actual, expected, label = 'value') {
+  const a = JSON.stringify(actual);
+  const e = JSON.stringify(expected);
+  if (a !== e) throw new Error(`${label}: expected ${e}, got ${a}`);
+}
+
+function throws(body, label) {
+  try {
+    body();
+  } catch {
+    return;
+  }
+  throw new Error(`${label}: expected an error`);
+}
+
+// Small seeded generator so the random checks are the same on every run.
+function seeded(seed) {
+  return () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// A `random` that rolls the dice given, in order, then sixes and fives.
+function dice(...values) {
+  const queue = [...values];
+  let spare = 0;
+  return () => ((queue.length ? queue.shift() : [6, 5][spare++ % 2]) - 0.5) / 6;
+}
+
+// A board from where each side's checkers stand, as { point: count } in that
+// side's own numbering; checkers not placed count as borne off.
+function position(mine, theirs) {
+  const board = [new Array(26).fill(0), new Array(26).fill(0)];
+  [mine, theirs].forEach((spots, side) => {
+    for (const [point, count] of Object.entries(spots)) board[side][point] += count;
+    board[side][OFF] += CHECKERS - board[side].reduce((sum, n) => sum + n, 0);
+  });
+  return board;
+}
+
+// A match in progress at `board`, with `side` to play `rolled`.
+function matchAt(board, side, rolled, options = {}) {
+  const match = newMatch({ mode: 'local', ...options }, dice(5, 2));
+  Object.assign(match, { board, turn: side, dice: rolled, phase: 'move', events: [] });
+  return match;
+}
+
+const results0 = turns => turns.map(turn => keyOf(turn.board)).sort();
+const movesOf = turns => turns.map(turn => turn.moves);
+
+// ---- Rules --------------------------------------------------------------
+
+test('rules: the start has fifteen checkers a side, 167 pips each, and contact', () => {
+  const board = startBoard();
+  equal(board.map(half => half.reduce((sum, n) => sum + n, 0)), [15, 15], 'checkers');
+  equal([pipCount(board, 0), pipCount(board, 1)], [167, 167], 'pips');
+  equal(isRace(board), false, 'race');
+  // Each side's 24 point is the other's ace point, where the two sit opposite.
+  equal([board[0][24], board[1][1]], [2, 0], 'back checkers');
+});
+
+test('rules: the opening roll is played by the higher die, a tie rolling again', () => {
+  const match = newMatch({ mode: 'local' }, dice(3, 3, 5, 2));
+  equal(match.events.map(event => event.type), ['opening', 'opening', 'start'], 'events');
+  equal([match.turn, match.dice, match.phase], [0, [5, 2], 'move'], 'first turn');
+  const second = newMatch({ mode: 'local' }, dice(2, 6));
+  equal([second.turn, second.dice], [1, [6, 2]], 'the other side starts');
+});
+
+test('rules: 3-1 at the start can make the 5 point', () => {
+  const turns = legalTurns(startBoard(), 0, [3, 1]);
+  const made = turns.find(turn => turn.board[0][5] === 2 && turn.board[0][8] === 2 && turn.board[0][6] === 4);
+  if (!made) throw new Error('8/5 6/5 not found');
+  equal(turns.every(turn => turn.moves.length === 2), true, 'both dice used');
+});
+
+test('rules: a checker on the bar must come in before anything else moves', () => {
+  const board = position({ 25: 1, 13: 5, 8: 3, 6: 5 }, { 6: 5, 8: 3, 13: 5 });
+  const turns = legalTurns(board, 0, [6, 5]);
+  equal(turns.every(turn => turn.moves[0][0] === BAR), true, 'enters first');
+  equal(turns.length > 0 && turns.every(turn => turn.moves.length === 2), true, 'and then moves');
+  // Coming in with a 6 lands on the 19 point, the other side's 6 point.
+  equal(landing(board, 0, BAR, 6), -1, 'their 6 point is closed');
+  equal(landing(board, 0, BAR, 5), 20, 'their 5 point is open');
+  equal(landing(board, 0, 13, 5), -1, 'nothing else may move');
+});
+
+test('rules: against a closed board nothing moves, and the empty turn is played', () => {
+  const board = position({ 25: 2, 13: 5 }, { 1: 2, 2: 2, 3: 2, 4: 2, 5: 2, 6: 2 });
+  const turns = legalTurns(board, 0, [4, 2]);
+  equal(movesOf(turns), [[]], 'one empty turn');
+  const match = matchAt(board, 0, [4, 2]);
+  play(match, 0, []);
+  equal([match.events[0].type, match.turn, match.phase], ['blocked', 1, 'roll'], 'turn passes');
+});
+
+test('rules: both dice must be used when they can be, even in one order only', () => {
+  // 13/7 is closed, but 13/8 then 8/2 uses both.
+  const board = position({ 13: 1 }, { 18: 2 });
+  equal(movesOf(legalTurns(board, 0, [6, 5])), [[[13, 8], [8, 2]]], 'turns');
+});
+
+test('rules: when only one die can be used, it must be the larger', () => {
+  // 13/7 or 13/11 alone: either way the other die is blocked by the 5 point.
+  const board = position({ 13: 1 }, { 20: 2 });
+  equal(movesOf(legalTurns(board, 0, [6, 2])), [[[13, 7]]], 'turns');
+  equal(turnState(board, 0, [6, 2]).moves, [{ from: 13, to: 7, die: 6 }], 'the 2 is not offered');
+});
+
+test('rules: doubles move four times, or as many as they can', () => {
+  equal(legalTurns(startBoard(), 0, [1, 1]).every(turn => turn.moves.length === 4), true, 'four moves');
+  const board = position({ 13: 1 }, { 20: 2 });
+  equal(movesOf(legalTurns(board, 0, [4, 4])), [[[13, 9]]], 'blocked after one');
+});
+
+test('rules: bearing off: exact, a larger die from the highest point, all checkers home', () => {
+  const home = position({ 6: 1, 3: 1 }, { 1: 2 });
+  equal([landing(home, 0, 6, 6), landing(home, 0, 3, 3), landing(home, 0, 3, 5)], [OFF, OFF, -1], 'exact, and not past a higher one');
+  const low = position({ 3: 1, 2: 1 }, { 1: 2 });
+  equal(legalTurns(low, 0, [6, 5]).some(turn => turn.board[0][OFF] === CHECKERS), true, 'larger dice bear both off');
+  const out = position({ 7: 1, 1: 1 }, { 1: 2 });
+  equal(landing(out, 0, 1, 1), -1, 'not while a checker is outside');
+  const turns = legalTurns(out, 0, [6, 1]);
+  equal(results0(turns), results0([{ board: applyMoves(out, 0, [[7, 1], [1, OFF]]) }]), 'brings it in, then bears off');
+});
+
+test('rules: hitting a lone checker sends it to the bar', () => {
+  const board = position({ 8: 1, 6: 2 }, { 20: 1, 24: 2 });
+  const match = matchAt(board, 0, [3, 1]);
+  play(match, 0, [[8, 5], [6, 5]]);
+  equal([match.board[1][BAR], match.board[1][20], match.events[0].hit, match.events[1].hit], [1, 0, true, false], 'hit');
+  equal(pipCount(match.board, 1), 25 + 2 * 24 + 0, 'their pips');
+});
+
+test('rules: single game, gammon and backgammon', () => {
+  equal(winKind(position({}, { 1: 14 }), 0), 'single', 'one borne off');
+  equal(winKind(position({}, { 1: 15 }), 0), 'gammon', 'none borne off');
+  equal(winKind(position({}, { 1: 14, 19: 1 }), 0), 'backgammon', 'one in the winner home board');
+  equal(winKind(position({}, { 1: 14, 25: 1 }), 0), 'backgammon', 'one on the bar');
+});
+
+test('rules: a win scores 1, 2 or 3 times the cube', () => {
+  for (const [theirs, kind, points] of [[{ 1: 14 }, 'single', 2], [{ 6: 15 }, 'gammon', 4], [{ 6: 14, 20: 1 }, 'backgammon', 6]]) {
+    const match = matchAt(position({ 1: 1 }, theirs), 0, [2, 1], { target: 7 });
+    match.cube = { value: 2, owner: 1 };
+    play(match, 0, [[1, OFF]]);
+    equal([match.result.kind, match.result.points, match.score, match.phase], [kind, points, [points, 0], 'between'], kind);
+    equal(match.tally[0], { games: 1, gammons: kind === 'gammon' ? 1 : 0, backgammons: kind === 'backgammon' ? 1 : 0 }, 'tally');
+  }
+});
+
+test('rules: turns that break the rules are refused', () => {
+  const match = newMatch({ mode: 'local' }, dice(5, 2));
+  throws(() => play(match, 1, [[13, 8], [13, 11]]), 'the other side');
+  throws(() => play(match, 0, [[13, 8]]), 'half a turn');
+  throws(() => play(match, 0, [[13, 9], [13, 11]]), 'a number not rolled');
+  throws(() => play(match, 0, [[13, 8], [13, 11], [8, 6]]), 'too many moves');
+  throws(() => play(match, 0, [[6, OFF], [13, 11]]), 'bearing off too soon');
+  throws(() => play(match, 0, 'moves'), 'not a list');
+  throws(() => play(match, 0, [[13, '8'], [13, 11]]), 'not a number');
+  throws(() => roll(match, 0), 'rolling again');
+  throws(() => double(match, 0), 'doubling after the roll');
+  const closed = matchAt(position({ 13: 1 }, { 18: 2 }), 0, [6, 5]);
+  throws(() => play(closed, 0, [[13, 7], [7, 2]]), 'onto a closed point');
+  equal(match.board, startBoard(), 'nothing changed');
+  play(match, 0, [[13, 8], [13, 11]]);
+  equal([match.turn, match.phase], [1, 'roll'], 'then a good turn is played');
+});
+
+test('rules: the cube is doubled, taken and owned, or passed for the old stakes', () => {
+  const match = matchAt(startBoard(), 0, [], { target: 5 });
+  match.phase = 'roll';
+  equal(canDouble(match, 0), true, 'centred');
+  double(match, 0);
+  equal([match.phase, match.events[0]], ['doubled', { type: 'double', side: 0, value: 2 }], 'offered');
+  throws(() => take(match, 0), 'the doubler cannot take');
+  take(match, 1);
+  equal([match.cube, match.phase, match.turn], [{ value: 2, owner: 1 }, 'roll', 0], 'taken; the doubler rolls');
+  equal([canDouble(match, 0)], [false], 'only the owner may redouble');
+  roll(match, 0, dice(5, 2));
+  play(match, 0, [[13, 8], [13, 11]]);
+  equal(canDouble(match, 1), true, 'the owner may');
+  double(match, 1);
+  pass(match, 0);
+  equal([match.score, match.result, match.phase], [[0, 2], { winner: 1, kind: 'single', cube: 2, points: 2, by: 'pass' }, 'between'], 'passed');
+});
+
+test('rules: no cube in a 1-point match, with the cube off, or in the Crawford game', () => {
+  const one = matchAt(startBoard(), 0, [], { target: 1 });
+  one.phase = 'roll';
+  const off = matchAt(startBoard(), 0, [], { target: 5, cube: false });
+  off.phase = 'roll';
+  equal([canDouble(one, 0), canDouble(off, 0)], [false, false], 'never');
+
+  // 3-point match: a side reaching 2 makes the next game the Crawford game.
+  const match = matchAt(position({ 1: 1 }, { 1: 14 }), 0, [2, 1], { target: 3 });
+  play(match, 0, [[1, OFF]]);
+  equal(match.score, [1, 0], 'one point');
+  nextGame(match, dice(5, 2));
+  equal(match.crawford, null, 'not yet');
+  Object.assign(match, { board: position({ 1: 1 }, { 1: 14 }), turn: 0, dice: [2, 1], phase: 'move' });
+  play(match, 0, [[1, OFF]]);
+  nextGame(match, dice(5, 2));
+  equal([match.score, match.crawford, match.gameNo], [[2, 0], 'now', 3], 'Crawford game');
+  play(match, 0, [[13, 8], [13, 11]]);
+  equal(canDouble(match, 1), false, 'nobody doubles in it');
+  Object.assign(match, { board: position({ 1: 14 }, { 1: 1 }), turn: 1, dice: [2, 1], phase: 'move' });
+  play(match, 1, [[1, OFF]]);
+  nextGame(match, dice(2, 5));
+  play(match, 1, [[13, 8], [13, 11]]);
+  equal([match.score, match.crawford, canDouble(match, 0)], [[2, 1], 'done', true], 'after it the cube is back');
+});
+
+test('rules: the match ends the moment a side reaches the target', () => {
+  const match = matchAt(position({ 1: 1 }, { 6: 15 }), 0, [2, 1], { target: 3 });
+  match.score = [2, 0];
+  play(match, 0, [[1, OFF]]);
+  equal([match.score, match.phase, match.winner, match.events.at(-1)], [[4, 0], 'over', 0, { type: 'match', side: 0 }], 'over');
+  throws(() => nextGame(match), 'no next game');
+});
+
+test('rules: a turn can be made one checker at a time, in any order', () => {
+  const board = startBoard();
+  const first = turnState(board, 0, [6, 1]);
+  equal([first.done, first.moves.some(m => m.from === 13 && m.to === 7), first.moves.some(m => m.from === 8 && m.to === 7)], [false, true, true], 'either first');
+  const half = turnState(board, 0, [6, 1], [{ from: 8, to: 7, die: 1 }]);
+  equal([half.left, half.done, half.moves.some(m => m.from === 13 && m.to === 7)], [[6], false, true], 'then the other');
+  const whole = turnState(board, 0, [6, 1], [{ from: 8, to: 7, die: 1 }, { from: 13, to: 7, die: 6 }]);
+  equal([whole.done, whole.moves, whole.board[0][7]], [true, [], 2], 'done');
+  equal(turnState(position({ 25: 2 }, { 1: 2, 2: 2, 3: 2, 4: 2, 5: 2, 6: 2 }), 0, [3, 3]).done, true, 'nothing to move is done');
+});
+
+test('rules: turns are written in the usual notation', () => {
+  equal(moveText(startBoard(), 0, [[8, 5], [6, 5]]), '8/5 6/5', 'a point made');
+  equal(moveText(startBoard(), 0, [[13, 7], [13, 7], [8, 2], [8, 2]]), '13/7(2) 8/2(2)', 'doubles');
+  equal(moveText(position({ 25: 1, 6: 2 }, { 5: 1 }), 0, [[25, 20], [6, 1]]), 'bar/20* 6/1', 'from the bar, hitting');
+  equal(moveText(position({ 2: 1 }, { 1: 2 }), 0, [[2, OFF]]), '2/off', 'bearing off');
+});
+
+test('rules: a saved match plays on after a round trip through JSON', () => {
+  const match = JSON.parse(JSON.stringify(newMatch({ mode: 'ai', target: 3 }, dice(5, 2))));
+  play(match, 0, [[13, 8], [13, 11]]);
+  roll(match, 1, dice(4, 4));
+  equal(legalTurns(match.board, 1, match.dice).length > 1, true, 'still plays');
+});
+
+// A literal generator, written from the rules without the fast one's
+// shortcuts: every die in every order, every checker, then the rule about
+// using as many dice as possible, and the larger.
+function slowLanding(board, side, from, die) {
+  const mine = board[side];
+  const theirs = board[1 - side];
+  if (mine[from] === 0) return null;
+  if (mine[25] > 0 && from !== 25) return null;
+  const to = from - die;
+  if (to > 0) {
+    if (theirs[25 - to] > 1) return null;
+    const next = [mine.slice(), theirs.slice()];
+    next[0][from]--;
+    next[0][to]++;
+    if (next[1][25 - to] === 1) {
+      next[1][25 - to] = 0;
+      next[1][25]++;
+    }
+    return side === 0 ? next : [next[1], next[0]];
+  }
+  let outside = 0;
+  for (let p = 7; p <= 25; p++) outside += mine[p];
+  if (outside > 0) return null;
+  if (to < 0) {
+    for (let p = 6; p > from; p--) if (mine[p] > 0) return null;
+  }
+  const next = [mine.slice(), theirs.slice()];
+  next[0][from]--;
+  next[0][0]++;
+  return side === 0 ? next : [next[1], next[0]];
+}
+
+function slowTurns(board, side, [a, b]) {
+  const ends = [];
+  const go = (current, left, used) => {
+    let moved = false;
+    for (const die of new Set(left)) {
+      const rest = [...left];
+      rest.splice(rest.indexOf(die), 1);
+      for (let from = 1; from <= 25; from++) {
+        const next = slowLanding(current, side, from, die);
+        if (!next) continue;
+        moved = true;
+        go(next, rest, [...used, die]);
+      }
+    }
+    if (!moved) ends.push({ board: current, used });
+  };
+  go(board, a === b ? [a, a, a, a] : [a, b], []);
+  const most = Math.max(...ends.map(end => end.used.length));
+  let kept = ends.filter(end => end.used.length === most);
+  if (a !== b && most === 1 && kept.some(end => end.used[0] === Math.max(a, b))) kept = kept.filter(end => end.used[0] === Math.max(a, b));
+  return [...new Set(kept.map(end => keyOf(end.board)))].sort();
+}
+
+// Fifteen checkers a side spread at random, never both sides on one point.
+// Some sides are all near home, so that bearing off comes up; some have only
+// a few checkers left; some hold their points in pairs, which blocks the
+// other side and often leaves only one die to play.
+function randomPosition(random) {
+  const board = [new Array(26).fill(0), new Array(26).fill(0)];
+  const open = (side, p) => !(p >= 1 && p <= 24 && board[1 - side][25 - p] > 0);
+  for (let side = 0; side < 2; side++) {
+    const style = random();
+    let left = CHECKERS;
+    if (style >= 0.3 && style < 0.5) {
+      const few = 1 + Math.floor(random() * 3);
+      board[side][OFF] += CHECKERS - few;
+      left = few;
+    }
+    while (left > 0) {
+      let p;
+      if (style < 0.3) p = Math.floor(random() * 7); // home or off
+      else if (style < 0.5) p = 1 + Math.floor(random() * 25);
+      else if (style < 0.7) p = 1 + Math.floor(random() * 24);
+      else if (style < 0.8 && random() < 0.3) p = 25; // the bar
+      else p = Math.floor(random() * 26);
+      if (!open(side, p)) continue;
+      const count = style >= 0.5 && style < 0.7 ? Math.min(2, left) : 1;
+      board[side][p] += count;
+      left -= count;
+    }
+  }
+  return board;
+}
+
+test('rules: the fast generator agrees with a literal one on 5,000 random positions', () => {
+  const random = seeded(7);
+  let doubles = 0;
+  for (let i = 0; i < 5000; i++) {
+    const board = randomPosition(random);
+    const side = i % 2;
+    const roll = [1 + Math.floor(random() * 6), 1 + Math.floor(random() * 6)];
+    if (roll[0] === roll[1]) doubles++;
+    const fast = results0(legalTurns(board, side, roll));
+    const slow = slowTurns(board, side, roll);
+    if (JSON.stringify(fast) !== JSON.stringify(slow)) {
+      throw new Error(`position ${i}, side ${side}, roll ${roll}: ${fast.length} turns against ${slow.length}`);
+    }
+  }
+  notes.push(`generator cross-check: 5000 positions, ${doubles} doubles`);
+});
+
+test('rules: every legal turn can be made one checker at a time and is accepted', () => {
+  const random = seeded(11);
+  let walked = 0;
+  for (let i = 0; i < 600; i++) {
+    const board = randomPosition(random);
+    const side = i % 2;
+    const roll = [1 + Math.floor(random() * 6), 1 + Math.floor(random() * 6)];
+    const turns = legalTurns(board, side, roll);
+    for (const turn of turns) {
+      const madeSoFar = [];
+      for (const [from, to] of turn.moves) {
+        const state = turnState(board, side, roll, madeSoFar, turns);
+        const step = state.moves.find(move => move.from === from && move.to === to);
+        if (!step) throw new Error(`position ${i}: ${from}/${to} not offered after ${JSON.stringify(madeSoFar)}`);
+        madeSoFar.push(step);
+      }
+      if (!turnState(board, side, roll, madeSoFar, turns).done) throw new Error(`position ${i}: turn not done`);
+      const match = matchAt(copyBoard(board), side, roll);
+      play(match, side, turn.moves);
+      if (keyOf(match.board) !== keyOf(turn.board)) throw new Error(`position ${i}: played to a different position`);
+      walked++;
+    }
+  }
+  notes.push(`turn walk: ${walked} turns made a checker at a time`);
+});
+
+// ---- Board --------------------------------------------------------------
+
+const inside = ([x, y], margin = 0) => x - margin >= 0 && x + margin <= BOARD.width && y - margin >= 0 && y + margin <= BOARD.height;
+const apart = ([x1, y1], [x2, y2]) => Math.hypot(x1 - x2, y1 - y2);
+
+test('board: the points run round the board, a point apart, none overlapping', () => {
+  const columns = [];
+  for (let n = 1; n <= 24; n++) columns.push([pointX(n), isTopRow(n)]);
+  const seen = new Set(columns.map(([x, top]) => `${x}:${top}`));
+  equal(seen.size, 24, 'distinct places');
+  for (const run of [[1, 6], [7, 12], [13, 18], [19, 24]]) {
+    for (let n = run[0]; n < run[1]; n++) {
+      if (Math.abs(Math.abs(pointX(n) - pointX(n + 1)) - 26) > 1e-9) throw new Error(`points ${n} and ${n + 1} are not one point apart`);
+    }
+  }
+  equal([pointX(1) > pointX(6), pointX(7) > pointX(12), pointX(13) < pointX(18), pointX(19) < pointX(24)], [true, true, true, true], 'directions');
+  equal([pointX(6) - pointX(7) > 26, pointX(19) - pointX(18) > 26], [true, true], 'the bar between the halves');
+});
+
+test('board: every checker of a stack is on its point, in its half, inside the board', () => {
+  for (let n = 1; n <= 24; n++) {
+    for (let k = 0; k < STACK + 3; k++) {
+      const place = checkerXY(n, k);
+      if (!inside(place, BOARD.radius)) throw new Error(`point ${n}, checker ${k} is off the board`);
+      if (place[0] !== pointX(n)) throw new Error(`point ${n}, checker ${k} is off its point`);
+      const half = isTopRow(n) ? place[1] < BOARD.height / 2 - BOARD.radius : place[1] > BOARD.height / 2 + BOARD.radius;
+      if (!half) throw new Error(`point ${n}, checker ${k} reaches the middle`);
+    }
+    if (apart(checkerXY(n, 0), checkerXY(n, 1)) < 2 * BOARD.radius) throw new Error(`point ${n}: checkers overlap`);
+  }
+});
+
+test('board: the bar, the cube and the trays keep clear of one another', () => {
+  // A checker and the square cube overlap only if they do along both axes.
+  const clear = ([x1, y1], [x2, y2]) => Math.max(Math.abs(x1 - x2), Math.abs(y1 - y2)) >= BOARD.radius + BOARD.cube / 2;
+  for (const bottom of [true, false]) {
+    for (let k = 0; k < BAR_STACK; k++) {
+      const place = barXY(bottom, k);
+      if (!inside(place, BOARD.radius)) throw new Error(`bar checker ${k} is off the board`);
+      for (const cube of ['centre', 'bottom', 'top']) {
+        if (!clear(place, cubeXY(cube))) throw new Error(`bar checker ${k} under the ${cube} cube`);
+      }
+    }
+    for (let k = 0; k < CHECKERS; k++) {
+      const place = trayXY(bottom, k);
+      if (!inside(place, 4)) throw new Error(`borne-off checker ${k} is off the board`);
+      if (locate(...place)?.kind !== 'tray' || locate(...place).bottom !== bottom) throw new Error(`borne-off checker ${k} is not in its tray`);
+    }
+  }
+});
+
+test('board: a tap finds the point, bar, tray or dice it lands on', () => {
+  for (let n = 1; n <= 24; n++) {
+    for (let k = 0; k < STACK; k++) equal(locate(...checkerXY(n, k)), { kind: 'point', n }, `point ${n}, checker ${k}`);
+  }
+  equal(locate(...barXY(true, 0)), { kind: 'bar' }, 'bar');
+  for (const bottom of [true, false]) {
+    for (const count of [1, 2, 4]) {
+      for (let i = 0; i < count; i++) {
+        const place = diceXY(bottom, count, i);
+        equal(locate(...place).kind, 'dice', `die ${i} of ${count}`);
+        if (bottom !== place[0] > BOARD.width / 2) throw new Error('dice in the wrong half');
+      }
+    }
+  }
+  equal(locate(-5, 100), null, 'off the board');
+});
+
+// ---- The network --------------------------------------------------------
+
+const net = unpackNet(WEIGHTS);
+const consistent = p =>
+  p.every(x => x >= 0 && x <= 1) && p[WIN_GAMMON] <= p[WIN] && p[WIN_BACKGAMMON] <= p[WIN_GAMMON] && p[LOSE_GAMMON] <= 1 - p[WIN] && p[LOSE_BACKGAMMON] <= p[LOSE_GAMMON];
+
+test('network: the weights load, and the chances agree with each other and stay the same', () => {
+  equal([net.w1.length, net.w2.length], [INPUTS * WEIGHTS.hidden, WEIGHTS.hidden * 5], 'sizes');
+  const random = seeded(3);
+  for (let i = 0; i < 300; i++) {
+    const board = randomPosition(random);
+    if (board[0][OFF] === CHECKERS || board[1][OFF] === CHECKERS) continue;
+    const first = [...evaluate(net, board, i % 2)];
+    const again = [...evaluate(net, board, i % 2)];
+    if (!consistent(first)) throw new Error(`inconsistent chances ${first.map(x => x.toFixed(3))}`);
+    equal(first, again, 'the same twice');
+  }
+  notes.push(`network: ${WEIGHTS.hidden} hidden units, trained on ${WEIGHTS.games.toLocaleString('en')} games (${WEIGHTS.trained})`);
+});
+
+test('network: the inputs see each side from its own end, and flipping twice changes nothing', () => {
+  const board = position({ 24: 2, 13: 4, 6: 5, 25: 1 }, { 6: 5, 8: 3, 13: 5, 2: 1 });
+  const mirrored = [board[1], board[0]];
+  equal([...encode(board, 0)], [...encode(mirrored, 1)], 'same inputs for the same view');
+  const p = evaluate(net, board, 0);
+  equal([...flip(flip(p))].map(x => x.toFixed(9)), [...p].map(x => x.toFixed(9)), 'flip twice');
+});
+
+test('network: packing the weights keeps each within its 16-bit step', () => {
+  const random = seeded(5);
+  const hidden = 6;
+  const make = size => Float64Array.from({ length: size }, () => random() * 4 - 2);
+  const original = { hidden, w1: make(INPUTS * hidden), b1: make(hidden), w2: make(hidden * 5), b2: make(5) };
+  const packed = packNet(original);
+  const copy = unpackNet(packed);
+  ['w1', 'b1', 'w2', 'b2'].forEach((part, i) => {
+    const worst = Math.max(...[...original[part]].map((w, j) => Math.abs(w - copy[part][j])));
+    if (worst > packed.scales[i]) throw new Error(`${part}: off by ${worst}`);
+  });
+});
+
+test('network: a side far ahead in a race expects to win', () => {
+  const board = position({ 1: 2, 2: 2 }, { 6: 3, 5: 3, 4: 3 });
+  equal(evaluate(net, board, 0)[WIN] > 0.9, true, `win chance ${evaluate(net, board, 0)[WIN].toFixed(3)}`);
+  equal(evaluate(net, board, 1)[WIN] < 0.15, true, `and from the other side ${evaluate(net, board, 1)[WIN].toFixed(3)}`);
+});
+
+// ---- The computer -------------------------------------------------------
+
+test('computer: the match equity table is fair, and favours whoever needs less', () => {
+  equal(matchEquity(1, 1), 0.5, 'double match point');
+  for (let a = 1; a <= 7; a++) {
+    for (let b = 1; b <= 7; b++) {
+      const sum = matchEquity(a, b) + matchEquity(b, a);
+      if (Math.abs(sum - 1) > 1e-9) throw new Error(`${a}-away against ${b}-away: ${sum}`);
+      if (b > 1 && matchEquity(a, b) <= matchEquity(a, b - 1)) throw new Error(`${a} against ${b} is not better than against ${b - 1}`);
+    }
+  }
+  const crawford = matchEquity(1, 2);
+  equal(crawford > 0.65 && crawford < 0.72, true, `1-away against 2-away, Crawford: ${crawford.toFixed(3)}`);
+  equal(matchEquity(3, 3, 'plain'), 0.5, 'even without the cube');
+});
+
+const openings = [
+  [[3, 1], { 8: 2, 6: 4, 5: 2 }, '8/5 6/5'],
+  [[4, 2], { 8: 2, 6: 4, 4: 2 }, '8/4 6/4'],
+  [[6, 1], { 13: 4, 8: 2, 7: 2 }, '13/7 8/7'],
+  [[5, 3], { 8: 2, 6: 4, 3: 2 }, '8/3 6/3'],
+];
+
+for (const [roll, points, written] of openings) {
+  test(`computer: plays the opening ${roll.join('-')} as ${written}`, () => {
+    const match = matchAt(startBoard(), 0, roll, { target: 1 });
+    const turn = bestTurn(match, 0);
+    for (const [point, count] of Object.entries(points)) {
+      if (turn.board[0][point] !== count) throw new Error(`played ${moveText(startBoard(), 0, turn.moves)}`);
+    }
+  });
+}
+
+// A race that one side has as good as won, with no gammon left in it.
+const crushing = () => position({ 1: 2, 2: 2 }, { 6: 3, 5: 3, 4: 2 });
+
+test('computer: doubles when crushing, and the other side passes', () => {
+  const match = matchAt(crushing(), 0, [], { target: 5 });
+  match.phase = 'roll';
+  equal(shouldDouble(match, 0, 'hard'), true, 'doubles');
+  double(match, 0);
+  equal(shouldTake(match, 1, 'hard'), false, 'passes');
+});
+
+test('computer: neither doubles nor passes at the start of a game', () => {
+  const match = matchAt(startBoard(), 0, [], { target: 5 });
+  match.phase = 'roll';
+  equal(shouldDouble(match, 0, 'hard'), false, 'no double');
+  double(match, 0);
+  equal(shouldTake(match, 1, 'hard'), true, 'takes');
+});
+
+test('computer: never doubles when it could only lose by it, nor in the Crawford game', () => {
+  const match = matchAt(crushing(), 0, [], { target: 5 });
+  Object.assign(match, { phase: 'roll', score: [4, 2], crawford: 'done' });
+  equal(shouldDouble(match, 0, 'hard'), false, 'one point wins anyway');
+  Object.assign(match, { score: [0, 4], crawford: 'now' });
+  equal(shouldDouble(match, 0, 'hard'), false, 'Crawford game');
+});
+
+test('computer: the hint is what Hard would play, in words', () => {
+  const random = seeded(17);
+  for (let i = 0; i < 25; i++) {
+    const board = randomPosition(random);
+    if (board[0][OFF] === CHECKERS || board[1][OFF] === CHECKERS) continue;
+    const match = matchAt(board, 0, [1 + Math.floor(random() * 6), 1 + Math.floor(random() * 6)], { target: 3 });
+    const advice = hint(match, 0);
+    equal(advice.moves, bestTurn(match, 0).moves, `position ${i}`);
+    if (!advice.text) throw new Error('no words');
+  }
+  const doubled = matchAt(crushing(), 0, [], { target: 5 });
+  doubled.phase = 'roll';
+  equal(hint(doubled, 0).cube, 'double', 'cube hint');
+});
+
+// Whole matches between two computer players, straight through the rules.
+function playOutMatch(levels, { target = 1, cube = false } = {}) {
+  const players = levels.map((level, side) => ({ name: `P${side + 1}`, ai: true, level }));
+  const match = newMatch({ mode: 'local', target, cube, players });
+  for (let steps = 0; match.phase !== 'over'; steps++) {
+    if (steps > 20000) throw new Error('match did not finish');
+    if (match.phase === 'between') {
+      nextGame(match);
+      continue;
+    }
+    const side = match.phase === 'doubled' ? other(match.turn) : match.turn;
+    if (match.phase === 'doubled') (shouldTake(match, side) ? take : pass)(match, side);
+    else if (match.phase === 'roll') (shouldDouble(match, side) ? double : roll)(match, side);
+    else play(match, side, pickTurn(match, side).moves);
+  }
+  return match;
+}
+
+test('computer: every level plays whole matches with the cube, every move legal', () => {
+  const realRandom = Math.random;
+  Math.random = seeded(41);
+  const cubes = [];
+  try {
+    for (const levels of [['easy', 'hard'], ['medium', 'easy'], ['hard', 'medium']]) {
+      const match = playOutMatch(levels, { target: 5, cube: true });
+      if (Math.max(...match.score) < 5) throw new Error(`${levels} ended at ${match.score}`);
+      cubes.push(match.highCube);
+    }
+  } finally {
+    Math.random = realRandom;
+  }
+  notes.push(`whole matches to 5: highest cubes ${cubes.join(', ')}`);
+});
+
+// ---- Statistics ---------------------------------------------------------
+
+const finished = (winner, { mode = 'ai', difficulty = 'hard', score = winner ? [1, 5] : [5, 1] } = {}) => ({
+  mode,
+  difficulty,
+  players: mode === 'ai' ? [{ name: 'You' }, { name: 'Computer', ai: true, level: difficulty }] : [{ name: 'Ann' }, { name: 'Ben' }],
+  winner,
+  score,
+  tally: [{ games: 3, gammons: 1, backgammons: 0 }, { games: 1, gammons: 0, backgammons: 1 }],
+  highCube: 4,
+});
+
+test('stats: a finished match against the computer counts its games, gammons and cube', () => {
+  const stats = emptyStats();
+  recordMatch(stats, finished(0));
+  recordMatch(stats, finished(0));
+  recordMatch(stats, finished(1));
+  equal(stats.ai.hard, { matches: 3, wins: 2, streak: 0, bestStreak: 2 }, 'hard');
+  equal(stats.games, { won: 9, lost: 3, gammonsWon: 3, gammonsLost: 0, backgammonsWon: 0, backgammonsLost: 3 }, 'games');
+  equal(stats.records, { cube: 4, margin: 4 }, 'records');
+});
+
+test('stats: matches between people count for each by name', () => {
+  const stats = emptyStats();
+  recordMatch(stats, finished(1, { mode: 'local' }));
+  equal(stats.people, { ann: { name: 'Ann', matches: 1, wins: 0 }, ben: { name: 'Ben', matches: 1, wins: 1 } }, 'people');
+  equal(stats.games.won, 0, 'their games stay out of the totals');
+});
+
+test('stats: damaged saved data falls back to zeros', () => {
+  const stats = loadStats({ ai: { easy: { matches: 'lots', wins: 2 } }, people: { x: 'nonsense', ann: { name: 'Ann', matches: 3 } }, games: null });
+  equal(stats.ai.easy, { matches: 0, wins: 2, streak: 0, bestStreak: 0 }, 'easy');
+  equal(stats.people, { ann: { name: 'Ann', matches: 3, wins: 0 } }, 'people');
+  equal(stats.games, emptyStats().games, 'games');
+  equal(loadStats(null), emptyStats(), 'nothing saved');
+});
+
+// ---- Celebration --------------------------------------------------------
+
+// A phone upright, a phone on its side and a desktop window.
+const screens = [[390, 664], [844, 390], [1280, 720]];
+
+// Runs a whole show in steps of a sixtieth of a second, calling look(show,
+// bursts) after each step, and returns the show once it is over.
+function runShow(width, height, look = () => {}) {
+  const show = createShow(width, height, seeded(width));
+  for (let step = 0; step < 60 * 20 && !isOver(show); step++) look(show, advance(show, 1 / 60));
+  return show;
+}
+
+test('celebration: every firework bursts on screen, in the upper half', () => {
+  for (const [width, height] of screens) {
+    runShow(width, height, (show, bursts) => {
+      if (!bursts) return;
+      for (const rocket of show.rockets.filter(r => r.burst)) {
+        if (rocket.x < 0.05 * width || rocket.x > 0.95 * width || rocket.to < 0.08 * height || rocket.to > 0.5 * height) {
+          throw new Error(`${width}x${height}: a burst at ${rocket.x.toFixed(0)}, ${rocket.to.toFixed(0)}`);
+        }
+      }
+    });
+  }
+});
+
+test('celebration: everything has gone within six seconds, and stays gone', () => {
+  for (const [width, height] of screens) {
+    const show = runShow(width, height);
+    if (!isOver(show)) throw new Error(`${width}x${height}: still going after 20 s`);
+    if (show.time > 6) throw new Error(`${width}x${height}: took ${show.time.toFixed(2)} s`);
+    advance(show, 1);
+    if (!isOver(show)) throw new Error(`${width}x${height}: started again`);
+  }
+});
+
+// ---- Sound --------------------------------------------------------------
+
+// Renders each effect into a buffer instead of the speakers. This cannot say
+// whether it sounds good, only that it is there, bounded and not distorted.
+// Effects are short, except the fanfare for a win and the ring of its hall.
+const LONGEST = { win: 4.5 };
+for (const name of SOUNDS) {
+  try {
+    const rate = 44100;
+    const context = new OfflineAudioContext(1, rate * 5, rate);
+    renderSound(name, context, 0.05);
+    const samples = (await context.startRendering()).getChannelData(0);
+    let peak = 0;
+    let end = 0;
+    samples.forEach((sample, i) => {
+      peak = Math.max(peak, Math.abs(sample));
+      if (Math.abs(sample) > 0.002) end = i / rate;
+    });
+    notes.push(`sound ${name}: peak ${peak.toFixed(2)}, ends at ${end.toFixed(2)} s`);
+    if (peak < 0.05) throw new Error(`too quiet, peak ${peak.toFixed(3)}`);
+    if (peak > 0.98) throw new Error(`would clip, peak ${peak.toFixed(2)}`);
+    if (end > (LONGEST[name] ?? 1.3)) throw new Error(`still sounding after ${end.toFixed(2)} s`);
+    results.push({ name: `sound: ${name} is audible, bounded and does not clip`, ok: true });
+  } catch (error) {
+    results.push({ name: `sound: ${name} is audible, bounded and does not clip`, ok: false, error: error.message });
+  }
+}
+
+// ---- Self-play ----------------------------------------------------------
+
+// Single games without the cube, each level taking each side in turn, with
+// seeded dice so the results are the same on every run.
+function winRate(a, b, games) {
+  let wins = 0;
+  for (let i = 0; i < games; i++) {
+    const seat = i % 2;
+    const match = playOutMatch(seat ? [b, a] : [a, b]);
+    if (match.winner === seat) wins++;
+  }
+  return wins / games;
+}
+
+const realRandom = Math.random;
+Math.random = seeded(2026);
+const started = performance.now();
+for (const [a, b, games, atLeast] of [['hard', 'easy', 120, 0.6], ['hard', 'medium', 120, 0.5], ['medium', 'easy', 200, 0.55]]) {
+  test(`self-play: ${a} beats ${b} over ${games} games`, () => {
+    const rate = winRate(a, b, games);
+    notes.push(`${a} vs ${b}: ${(rate * 100).toFixed(1)}% wins for ${a}`);
+    if (rate < atLeast) throw new Error(`${a} won only ${(rate * 100).toFixed(1)}%`);
+  });
+}
+notes.push(`self-play took ${Math.round(performance.now() - started)} ms`);
+Math.random = realRandom;
+
+// ---- Report -------------------------------------------------------------
+
+const failed = results.filter(r => !r.ok);
+const summary = `${failed.length ? 'FAILED' : 'PASSED'} ${results.length - failed.length}/${results.length}`;
+document.title = summary;
+const heading = document.getElementById('summary');
+heading.textContent = summary;
+heading.className = failed.length ? 'fail' : 'pass';
+document.getElementById('out').textContent = [
+  ...results.map(r => (r.ok ? `ok    ${r.name}` : `FAIL  ${r.name}\n      ${r.error}`)),
+  '',
+  ...notes,
+].join('\n');
+</script>
+<script>
+  // A module that fails to load never reaches the report above.
+  addEventListener('error', event => {
+    document.getElementById('summary').textContent = `FAILED to run: ${event.message}`;
+  });
+</script>
+</body>
+</html>

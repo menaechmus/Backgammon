@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b3521">
+<meta name="description" content="Play backgammon in your browser against the computer or a friend on the same device.">
+<title>Backgammon</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 rx=%2220%22 fill=%22%231c6e45%22/><rect x=%2224%22 y=%2224%22 width=%2252%22 height=%2252%22 rx=%2210%22 fill=%22%23fffdf5%22/><circle cx=%2238%22 cy=%2238%22 r=%227%22 fill=%22%231d1d1f%22/><circle cx=%2250%22 cy=%2250%22 r=%227%22 fill=%22%231d1d1f%22/><circle cx=%2262%22 cy=%2262%22 r=%227%22 fill=%22%231d1d1f%22/></svg>">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<main id="menu" class="screen menu">
+  <header class="title">
+    <div class="emblem" aria-hidden="true">
+      <span class="piece die"><svg viewBox="-12 -12 24 24"><rect x="-11" y="-11" width="22" height="22" rx="4"/><circle cx="-5.5" cy="-5.5" r="2.2"/><circle r="2.2"/><circle cx="5.5" cy="5.5" r="2.2"/></svg></span>
+      <span class="piece checker light"></span>
+      <span class="piece checker dark"></span>
+      <span class="piece die"><svg viewBox="-12 -12 24 24"><rect x="-11" y="-11" width="22" height="22" rx="4"/><circle r="2.2"/></svg></span>
+    </div>
+    <h1>Backgammon</h1>
+  </header>
+
+  <div class="options">
+    <div class="option">
+      <span>Play against</span>
+      <div class="choice" data-setting="mode">
+        <button data-value="ai">Computer</button>
+        <button data-value="local">People</button>
+      </div>
+    </div>
+    <div class="option" id="row-difficulty">
+      <span>Difficulty</span>
+      <div class="choice" data-setting="difficulty">
+        <button data-value="easy">Easy</button>
+        <button data-value="medium">Medium</button>
+        <button data-value="hard">Hard</button>
+      </div>
+    </div>
+    <div class="names" id="row-names">
+      <input data-name="0" maxlength="12" placeholder="Player 1" aria-label="Player 1 name" autocomplete="off" spellcheck="false">
+      <input data-name="1" maxlength="12" placeholder="Player 2" aria-label="Player 2 name" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="option">
+      <span>Match to</span>
+      <div class="choice" data-setting="target">
+        <button data-value="1">1</button>
+        <button data-value="3">3</button>
+        <button data-value="5">5</button>
+        <button data-value="7">7</button>
+      </div>
+    </div>
+    <div class="option" id="row-cube">
+      <span>Doubling cube</span>
+      <div class="choice" data-setting="cube">
+        <button data-value="true">On</button>
+        <button data-value="false">Off</button>
+      </div>
+    </div>
+    <div class="option">
+      <span>Hints</span>
+      <div class="choice" data-setting="hints">
+        <button data-value="true">On</button>
+        <button data-value="false">Off</button>
+      </div>
+    </div>
+    <div class="option">
+      <span>Sound</span>
+      <div class="choice" data-setting="sound">
+        <button data-value="true">On</button>
+        <button data-value="false">Off</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="menu-actions">
+    <button id="btn-resume" class="btn primary" hidden>Resume match</button>
+    <button id="btn-new" class="btn primary">New match</button>
+    <div class="row">
+      <button id="btn-stats" class="btn">Statistics</button>
+      <button id="btn-rules" class="btn">How to play</button>
+      <button id="btn-about" class="icon-btn" aria-label="About">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <circle class="line" cx="12" cy="12" r="9"/>
+          <path class="line" d="M12 11v6"/>
+          <circle cx="12" cy="7.5" r="1.3"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+</main>
+
+<main id="table" class="screen table" hidden>
+  <header class="topbar">
+    <button id="btn-menu" class="icon-btn" aria-label="Menu">☰</button>
+    <div id="scores" class="scores"></div>
+  </header>
+
+  <div id="board" class="board"></div>
+
+  <div class="status" role="status" aria-live="polite">
+    <p id="events"></p>
+    <p id="prompt"></p>
+  </div>
+
+  <footer class="actions">
+    <button id="btn-sound" class="icon-btn" aria-label="Sound" aria-pressed="true">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M4 9v6h4l5 4V5L8 9z"/>
+        <path class="line on" d="M16.5 9a4.5 4.5 0 0 1 0 6M19 6.5a8 8 0 0 1 0 11"/>
+        <path class="line off" d="M17 9.5l5 5M22 9.5l-5 5"/>
+      </svg>
+    </button>
+    <button id="btn-hint" class="btn">Hint</button>
+    <button id="btn-second" class="btn">Undo</button>
+    <button id="btn-main" class="btn primary"></button>
+  </footer>
+</main>
+
+<div id="confirm" class="overlay" hidden>
+  <div class="dialog">
+    <h2 id="confirm-title"></h2>
+    <p id="confirm-text" class="muted"></p>
+    <div class="row">
+      <button class="btn" data-close>Cancel</button>
+      <button id="btn-confirm" class="btn primary"></button>
+    </div>
+  </div>
+</div>
+
+<div id="gameover" class="overlay" hidden>
+  <canvas id="party" width="0" height="0" aria-hidden="true"></canvas>
+  <div id="gameover-body" class="dialog"></div>
+</div>
+
+<div id="stats" class="overlay" hidden>
+  <div class="dialog wide">
+    <h2>Statistics</h2>
+    <div id="stats-body" class="stack"></div>
+    <div class="row">
+      <button id="btn-reset" class="btn danger">Reset statistics</button>
+      <button class="btn primary" data-close>Close</button>
+    </div>
+  </div>
+</div>
+
+<div id="rules" class="overlay" hidden>
+  <div class="dialog wide">
+    <h2>How to play</h2>
+    <ol class="rules">
+      <li><b>The race.</b> Each side has fifteen checkers. Bring all of yours into your home board, the bottom right quarter, and then bear them off. Yours move round the board anticlockwise: along the top from the right, down the left, and along the bottom to the right.</li>
+      <li><b>Moving.</b> Roll two dice and move a checker the number shown on each; the same checker may move twice. Doubles are played four times. A checker may stop on any point not held by two or more of the other side's.</li>
+      <li><b>Using the dice.</b> Use both dice whenever you can. If only one can be used, it must be the larger. If neither can, press Done.</li>
+      <li><b>Hitting.</b> A lone checker that is landed on goes to the bar. A checker on the bar must come back in, in the other side's home board, before anything else moves.</li>
+      <li><b>Bearing off.</b> Once all your checkers are home, a die takes off a checker from the point it shows, or from the highest point if none is higher. The first side to bear off all fifteen wins.</li>
+      <li><b>Scoring.</b> A win is a single game, worth 1 point. If the loser has borne off none, it is a gammon, worth 2; and if the loser still has a checker on the bar or in the winner's home board, a backgammon, worth 3. The first side to reach the match length wins the match.</li>
+      <li><b>The doubling cube.</b> Before rolling you may double the stakes. The other side takes, and owns the cube, so only it may double next; or passes, and loses the game at the stakes before the double. In the Crawford game, the one after a side first comes within a point of winning the match, nobody may double.</li>
+      <li><b>Notation.</b> 13/7 moves a checker from point 13 to point 7, counting from the mover's side; bar and off mean the bar and bearing off, and * marks a hit. The points are numbered for the side to play.</li>
+    </ol>
+    <p class="muted">Tap a checker, and the places it may go light up; tap one to move there, or drag the checker. Undo takes back moves until you press Done. Tap anywhere to skip an animation or a celebration. On a keyboard: the arrow keys and Space move checkers, Enter presses the main button, U undoes, D doubles, H asks for a hint and M mutes the sound.</p>
+    <button class="btn primary" data-close>Got it</button>
+  </div>
+</div>
+
+<div id="about" class="overlay" hidden>
+  <div class="dialog">
+    <h2>Backgammon</h2>
+    <p id="about-version"></p>
+    <p class="muted">If this is older than you expect, refresh the page. Browsers can hold on to the previous version for a few minutes after an update.</p>
+    <p><a href="https://github.com/menaechmus/Backgammon" target="_blank" rel="noopener">Source on GitHub</a></p>
+    <button class="btn primary" data-close>Close</button>
+  </div>
+</div>
+
+<script type="module" src="js/ui.js"></script>
+</body>
+</html>
