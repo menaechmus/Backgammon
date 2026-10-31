@@ -6,6 +6,7 @@
   --paper: #fffdf5;
   --gold: #f6c955;
   --tip: #9fe8ff;
+  --bright: #ffe27a; /* outlines on the board */
   --warn: #ffb4a3;
   /* The two sides: ivory checkers, and red ones. */
   --light: #f6f0e1;
@@ -423,6 +424,7 @@ button {
 
 /* The board takes all the height the fixed rows leave, up to the screen's width. */
 .board {
+  position: relative;
   width: min(100%, 780px, (100vh - var(--fixed-rows)) * var(--board-shape));
   margin: 0 auto;
   touch-action: none;
@@ -432,7 +434,8 @@ button {
   .board { width: min(100%, 780px, (100dvh - var(--fixed-rows)) * var(--board-shape)); }
 }
 
-.board svg {
+.board > svg,
+.study-board > svg {
   display: block;
   width: 100%;
   height: auto;
@@ -441,10 +444,10 @@ button {
   box-shadow: inset 0 0 0 2px rgba(0, 0, 0, 0.25), 0 2px 6px rgba(0, 0, 0, 0.4);
 }
 
-.board .frame { fill: none; }
-.board .surface { fill: #124a2e; }
-.board .bar,
-.board .tray { fill: rgba(0, 0, 0, 0.24); }
+.frame { fill: none; }
+.surface { fill: #124a2e; }
+.bar,
+.tray { fill: rgba(0, 0, 0, 0.24); }
 
 .point.odd { fill: #e3c88f; }
 .point.even { fill: #7a3b22; }
@@ -483,27 +486,38 @@ button {
 .checker.side0 text { fill: #3a2a10; }
 .checker.side1 text { fill: #fff; }
 
+/* Rings and outlines are a bright line over a dark edge, so they show on
+   everything on the board: sand and mahogany points, felt, ivory and red. They
+   are real strokes, as Safari may not draw a CSS filter on part of an SVG. */
+.ring-edge,
+.ring-line,
+.dest-edge {
+  fill: none;
+  stroke-linejoin: round;
+}
+
+.ring-edge,
+.dest-edge { stroke: rgba(24, 14, 4, 0.82); }
+.ring-edge { stroke-width: 4.8; }
+.dest-edge { stroke-width: 5.4; }
+
+.ring-line {
+  stroke: var(--bright);
+  stroke-width: 2.6;
+}
+
 /* A checker that may move, the one picked up, a hint's, and the keyboard's. */
-.checker.movable > circle:first-child {
-  stroke: var(--gold);
-  stroke-width: 1.8;
+.checker.picked .ring-edge { stroke-width: 6.6; }
+
+.checker.picked .ring-line {
+  stroke: #fff;
+  stroke-width: 3.8;
 }
 
-.checker.picked > circle:first-child {
-  stroke: var(--gold);
-  stroke-width: 3.2;
-}
+.checker.tip .ring-line { stroke: var(--tip); }
 
-.checker.picked { filter: drop-shadow(0 0 3px var(--gold)); }
-
-.checker.tip > circle:first-child {
+.checker.cursor .ring-line {
   stroke: var(--tip);
-  stroke-width: 3;
-}
-
-.checker.cursor > circle:first-child {
-  stroke: var(--tip);
-  stroke-width: 3;
   stroke-dasharray: 4 2.5;
 }
 
@@ -514,19 +528,32 @@ button {
   filter: drop-shadow(0 3px 3px rgba(0, 0, 0, 0.5));
 }
 
-/* The places the picked checker may go. */
+/* The places the picked checker may go: the point lit up under the checkers,
+   and a ring over them where it would land. */
 .dest {
-  fill: rgba(246, 201, 85, 0.42);
-  stroke: var(--gold);
-  stroke-width: 2;
+  fill: rgba(255, 226, 122, 0.55);
+  stroke: var(--bright);
+  stroke-width: 2.8;
   stroke-linejoin: round;
+  animation: beckon 0.9s ease-in-out infinite alternate;
 }
 
-.dest.over { fill: rgba(246, 201, 85, 0.8); }
+.dest.over {
+  fill: rgba(255, 226, 122, 0.9);
+  animation: none;
+}
 
-.dest.cursor {
-  stroke: var(--tip);
-  stroke-width: 2.5;
+.dest.cursor { stroke: var(--tip); }
+
+.landing .ring-line {
+  stroke-dasharray: 5 3;
+  animation: beckon 0.9s ease-in-out infinite alternate;
+}
+
+.landing.cursor .ring-line { stroke: var(--tip); }
+
+@keyframes beckon {
+  to { opacity: 0.6; }
 }
 
 .borne { stroke-width: 0.8; }
@@ -552,17 +579,60 @@ button {
 .die.side1 circle { fill: var(--paper); }
 .die.used { opacity: 0.35; }
 
-.die .face {
+/* The other two dice of a double, appearing beside the two that were thrown. */
+.die.extra .face {
   transform-box: fill-box;
   transform-origin: center;
+  animation: appear 0.2s ease-out backwards;
 }
 
-.die.rolling .face { animation: tumble 0.16s linear infinite; }
+@keyframes appear {
+  from { opacity: 0; transform: scale(0.5); }
+}
 
-@keyframes tumble {
-  0% { transform: rotate(-18deg) translateY(-1.5px); }
-  50% { transform: rotate(14deg) translateY(1px); }
-  100% { transform: rotate(-18deg) translateY(-1.5px); }
+/* Dice in the air, as real cubes in a page layer over the board: the taps go
+   through it. Each part of a thrown die has its own part of the motion (see
+   dice.js): the die itself travels, .lift rises and falls, .cube turns over. */
+.dice-air {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.thrown {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: var(--size);
+  height: var(--size);
+}
+
+.thrown .lift {
+  position: absolute;
+  inset: 0;
+  perspective: calc(var(--size) * 6);
+}
+
+.thrown .cube {
+  position: absolute;
+  inset: 0;
+  transform-style: preserve-3d;
+}
+
+.thrown .pane {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.thrown .shadow {
+  position: absolute;
+  inset: 4%;
+  border-radius: 24%;
+  background: rgba(0, 0, 0, 0.5);
+  filter: blur(calc(var(--size) * 0.09));
 }
 
 .cube rect {
@@ -869,6 +939,112 @@ button {
   display: grid;
   gap: 8px;
   padding-left: 1.2em;
+}
+
+.guide-tabs { justify-self: center; }
+
+/* Opening moves: the board and what it shows, then the list of rolls. The board
+   and the buttons above it must fit on the screen together, however short. */
+.openings {
+  display: grid;
+  gap: 10px;
+}
+
+.study-side {
+  display: grid;
+  gap: 6px;
+  width: min(100%, (100vh - 130px) * var(--board-shape));
+  margin: 0 auto;
+}
+
+@supports (height: 1dvh) {
+  .study-side { width: min(100%, (100dvh - 130px) * var(--board-shape)); }
+}
+
+.study-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  text-align: center;
+}
+
+.study-nav b,
+.study-nav small { display: block; }
+.study-nav small { color: var(--muted); }
+
+/* With the room, the board stays beside the rolls as they scroll. */
+@media (min-width: 700px) {
+  .dialog.studying { width: min(100%, 860px); }
+
+  .openings {
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+    gap: 20px;
+    align-items: start;
+  }
+
+  .study-side {
+    position: sticky;
+    top: 0;
+  }
+}
+
+.study-plays {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+.play-chip {
+  min-height: 34px;
+  padding: 4px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.2);
+  font-variant-numeric: tabular-nums;
+}
+
+.play-chip[aria-pressed='true'] {
+  border-color: var(--gold);
+  color: var(--gold);
+  font-weight: 700;
+}
+
+.roll-groups {
+  display: grid;
+  gap: 10px;
+}
+
+.roll-groups h3 { margin-bottom: 4px; }
+
+.roll-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.roll-chip {
+  display: flex;
+  gap: 2px;
+  padding: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.roll-chip svg {
+  display: block;
+  width: 24px;
+  height: 24px;
+}
+
+.roll-chip rect { fill: var(--paper); }
+.roll-chip circle { fill: #1d1d1f; }
+
+.roll-chip[aria-pressed='true'] {
+  border-color: var(--gold);
+  background: rgba(246, 201, 85, 0.3);
 }
 
 /* Celebration. While a win is celebrated the overlay is see-through and its

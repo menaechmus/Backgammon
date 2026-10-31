@@ -39,8 +39,19 @@ export const copyBoard = board => [board[0].slice(), board[1].slice()];
 // A short string that tells one position from another, for sets and maps.
 export const keyOf = board => String.fromCharCode(...board[0], ...board[1]);
 
-// One die. Tests pass a `random` of their own to choose the numbers.
-export const rollDie = (random = Math.random) => 1 + Math.floor(random() * 6);
+// One die, from the browser's secure random numbers, which are as good in one
+// browser as in another. A byte of 252 or more is drawn again: 252 is the
+// largest multiple of six a byte can hold, so all six numbers get exactly the
+// same share. Tests and the dev tools pass a `random` of their own, to choose
+// the numbers or to repeat a run.
+const secureByte = new Uint8Array(1);
+
+export function rollDie(random = null) {
+  if (random) return 1 + Math.floor(random() * 6);
+  do crypto.getRandomValues(secureByte);
+  while (secureByte[0] >= 252);
+  return 1 + (secureByte[0] % 6);
+}
 
 // The dice to be played: two, or four of a double.
 export const diceList = ([a, b]) => (a === b ? [a, a, a, a] : [a, b]);
@@ -229,7 +240,7 @@ const seated = ({ name, ai = false, level }, difficulty) => ({ name, ai, ...(ai 
 // `players` is two of { name, ai, level }; a computer plays at its own
 // `level`, which against the computer is `difficulty`. `cube` says whether
 // the doubling cube is used; a 1-point match never uses it.
-export function newMatch({ mode = 'ai', difficulty = 'medium', target = 5, cube = true, players = defaultPlayers(mode, difficulty) } = {}, random = Math.random) {
+export function newMatch({ mode = 'ai', difficulty = 'medium', target = 5, cube = true, players = defaultPlayers(mode, difficulty) } = {}, random = null) {
   check(TARGETS.includes(target), 'A match is to 1, 3, 5 or 7 points');
   check(players.length === 2, 'Backgammon is a game for two');
   const match = {
@@ -269,13 +280,13 @@ function startGame(match, random) {
   match.events.push({ type: 'start', side: match.turn, dice: match.dice });
 }
 
-export function nextGame(match, random = Math.random) {
+export function nextGame(match, random = null) {
   check(match.phase === 'between', 'The game is not over yet');
   match.events = [];
   startGame(match, random);
 }
 
-export function roll(match, side, random = Math.random) {
+export function roll(match, side, random = null) {
   check(match.phase === 'roll' && match.turn === side, "Not this side's turn to roll");
   match.events = [];
   match.dice = [rollDie(random), rollDie(random)];

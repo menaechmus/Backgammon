@@ -16,9 +16,11 @@
 <script type="module">
 import {
   BAR, OFF, CHECKERS, startBoard, copyBoard, keyOf, pipCount, isRace, landing, applyMoves, legalTurns, turnState, moveText,
-  newMatch, nextGame, roll, play, double, take, pass, canDouble, winKind, other,
+  rollDie, newMatch, nextGame, roll, play, double, take, pass, canDouble, winKind, other,
 } from './js/game.js';
-import { BOARD, STACK, BAR_STACK, pointX, isTopRow, checkerXY, barXY, trayXY, diceXY, cubeXY, locate } from './js/board.js';
+import { BOARD, STRIP, STACK, BAR_STACK, pointX, isTopRow, checkerXY, barXY, trayXY, diceXY, cubeXY, locate } from './js/board.js';
+import { planThrow, flightOf, FACES, FACE_UP } from './js/dice.js';
+import { OPENING_GROUPS, parsePlay } from './js/openings.js';
 import { INPUTS, encode, evaluate, flip, unpackNet, packNet, WIN, WIN_GAMMON, WIN_BACKGAMMON, LOSE_GAMMON, LOSE_BACKGAMMON } from './js/neural.js';
 import { WEIGHTS } from './js/weights.js';
 import { bestTurn, pickTurn, shouldDouble, shouldTake, hint, matchEquity } from './js/ai.js';
@@ -31,7 +33,13 @@ import { createHost, createGuest, cleanMove, seatView, sameState, deniedText } f
 const results = [];
 const notes = [];
 
+// tests.html?only=dice runs just the tests with that word before the colon, to
+// check the dice on a phone without waiting for everything else.
+const only = new URLSearchParams(location.search).get('only');
+const wanted = name => !only || name.startsWith(`${only}:`);
+
 function test(name, body) {
+  if (!wanted(name)) return;
   try {
     body();
     results.push({ name, ok: true });
@@ -41,6 +49,7 @@ function test(name, body) {
 }
 
 async function testAsync(name, body) {
+  if (!wanted(name)) return;
   try {
     await body();
     results.push({ name, ok: true });
@@ -623,17 +632,19 @@ test('computer: the hint is what Hard would play, in words', () => {
 // Whole matches between two computer players, straight through the rules.
 function playOutMatch(levels, { target = 1, cube = false } = {}) {
   const players = levels.map((level, side) => ({ name: `P${side + 1}`, ai: true, level }));
-  const match = newMatch({ mode: 'local', target, cube, players });
+  const match = newMatch({ mode: 'local', target, cube, players }, Math.random);
   for (let steps = 0; match.phase !== 'over'; steps++) {
     if (steps > 20000) throw new Error('match did not finish');
     if (match.phase === 'between') {
-      nextGame(match);
+      nextGame(match, Math.random);
       continue;
     }
     const side = match.phase === 'doubled' ? other(match.turn) : match.turn;
     if (match.phase === 'doubled') (shouldTake(match, side) ? take : pass)(match, side);
-    else if (match.phase === 'roll') (shouldDouble(match, side) ? double : roll)(match, side);
-    else play(match, side, pickTurn(match, side).moves);
+    else if (match.phase === 'roll') {
+      if (shouldDouble(match, side)) double(match, side);
+      else roll(match, side, Math.random);
+    } else play(match, side, pickTurn(match, side).moves);
   }
   return match;
 }
@@ -652,6 +663,158 @@ test('computer: every level plays whole matches with the cube, every move legal'
     Math.random = realRandom;
   }
   notes.push(`whole matches to 5: highest cubes ${cubes.join(', ')}`);
+});
+
+// ---- The dice -----------------------------------------------------------
+
+// The real generator, in whatever browser opens this page. Each limit is one a
+// fair die would pass all but about once in 30,000 runs, so a failure means
+// something, and these are not seeded: every run is a fresh sample.
+const ROLLS = 600000;
+const sample = wanted('dice:') ? Array.from({ length: ROLLS }, () => [rollDie(), rollDie()]) : [];
+
+// How far counts stray from an even share: about the number of counts, less
+// one, if the dice are fair.
+function chiSquare(counts) {
+  const share = counts.reduce((sum, n) => sum + n, 0) / counts.length;
+  return counts.reduce((sum, n) => sum + (n - share) ** 2 / share, 0);
+}
+
+test('dice: all 36 rolls come up equally often', () => {
+  const counts = new Array(36).fill(0);
+  for (const [a, b] of sample) counts[(a - 1) * 6 + b - 1]++;
+  equal(counts.reduce((sum, n) => sum + n, 0), ROLLS, 'rolls counted');
+  const score = chiSquare(counts);
+  const doubles = [1, 2, 3, 4, 5, 6].map(n => `${n}-${n} ${(counts[(n - 1) * 7] / ROLLS * 100).toFixed(2)}%`);
+  notes.push(`${ROLLS} real rolls, 36 outcomes: chi-square ${score.toFixed(1)}; fair is about 35, and this fails above 80`);
+  notes.push(`each double, fair being 2.78%: ${doubles.join(', ')}`);
+  if (score > 80) throw new Error(`chi-square ${score.toFixed(1)}`);
+});
+
+test('dice: each face comes up equally often', () => {
+  const counts = new Array(6).fill(0);
+  for (const pair of sample) for (const die of pair) counts[die - 1]++;
+  const score = chiSquare(counts);
+  notes.push(`each face, fair being 16.67%: ${counts.map(n => `${(n / ROLLS / 2 * 100).toFixed(2)}%`).join(', ')}; chi-square ${score.toFixed(1)}, fails above 30`);
+  if (score > 30) throw new Error(`chi-square ${score.toFixed(1)}`);
+});
+
+test('dice: a roll has no memory of the one before', () => {
+  let same = 0;
+  for (let i = 1; i < ROLLS; i++) if (sample[i][0] === sample[i - 1][0] && sample[i][1] === sample[i - 1][1]) same++;
+  const fair = (ROLLS - 1) / 36;
+  const away = Math.abs(same - fair) / Math.sqrt(fair * (35 / 36));
+  notes.push(`the same roll twice running: ${same} times, fair about ${Math.round(fair)}`);
+  if (away > 4.5) throw new Error(`${away.toFixed(1)} standard deviations out`);
+});
+
+test('throw: dice rest clear of the checkers and of each other, in their own half', () => {
+  const random = seeded(7);
+  for (let i = 0; i < 6000; i++) {
+    const bottom = i % 2 === 0;
+    const count = [1, 2, 4][i % 3];
+    const dice = planThrow(bottom, count, random);
+    equal(dice.length, count, 'dice');
+    const quarter = BOARD.quarters[bottom ? 1 : 0];
+    // A square tilted reaches further than half its side: this far at most.
+    const reach = die => (BOARD.die / 2) * (Math.cos(die.tilt * Math.PI / 180) + Math.abs(Math.sin(die.tilt * Math.PI / 180)));
+    dice.forEach((die, n) => {
+      if (die.y - reach(die) < STRIP.top || die.y + reach(die) > STRIP.bottom) throw new Error(`y ${die.y} tilt ${die.tilt} leaves the strip`);
+      if (die.x - reach(die) < quarter.x || die.x + reach(die) > quarter.x + quarter.width) throw new Error(`x ${die.x} leaves its half`);
+      for (const next of dice.slice(n + 1)) {
+        if (Math.abs(die.x - next.x) < reach(die) + reach(next)) throw new Error(`dice ${die.x} and ${next.x} touch`);
+      }
+    });
+  }
+});
+
+test('throw: a throw comes in from its own side, and a double throws only two', () => {
+  const random = seeded(8);
+  for (let i = 0; i < 600; i++) {
+    const bottom = i % 2 === 0;
+    for (const [count, thrown] of [[1, 1], [2, 2], [4, 2]]) {
+      const dice = planThrow(bottom, count, random);
+      const flying = dice.filter(die => die.from);
+      equal(flying.length, thrown, `thrown of ${count}`);
+      equal(flying.map(die => die.delay).sort((a, b) => a - b), thrown === 1 ? [0] : [0, 60], 'one after the other');
+      for (const die of flying) {
+        if (bottom ? die.from[0] <= die.x : die.from[0] >= die.x) throw new Error('coming from the wrong side');
+      }
+    }
+  }
+});
+
+test('throw: a die keeps to the strip all the way, and stops exactly where it rests', () => {
+  const random = seeded(9);
+  for (let i = 0; i < 3000; i++) {
+    for (const die of planThrow(i % 2 === 0, 2, random)) {
+      const frames = flightOf(die);
+      for (const { y } of frames) if (y < STRIP.top || y > STRIP.bottom) throw new Error(`flying at y ${y}`);
+      for (let n = 1; n < frames.length; n++) {
+        if (Math.abs(frames[n].x - die.x) > Math.abs(frames[n - 1].x - die.x)) throw new Error('going backwards');
+      }
+      const end = frames.at(-1);
+      equal([end.x, end.y, end.high, end.spin, end.wobble], [die.x, die.y, 0, 0, 0], 'the end of the flight');
+    }
+  }
+});
+
+// As a matrix, rounded, so that a turn and its undoing come out exact.
+const turned = transform => Array.from(new DOMMatrix(transform).toFloat64Array(), n => Math.round(n * 1e6) / 1e6 + 0);
+
+test('throw: a cube has its faces where a real die does, and lands showing its number', () => {
+  const straight = turned('none');
+  for (let n = 1; n <= 6; n++) {
+    // Showing a number means its face turned back square to the viewer, pips
+    // the same way up as on the die drawn on the board.
+    equal(turned(`${FACE_UP[n]} ${FACES[n]}`), straight, `${n} face up`);
+    const outward = face => {
+      const { x, y, z } = new DOMMatrix(face).transformPoint({ x: 0, y: 0, z: 1 });
+      return [x, y, z].map(value => Math.round(value) + 0);
+    };
+    equal(outward(FACES[n]).map(value => -value + 0), outward(FACES[7 - n]), `${n} opposite ${7 - n}`);
+  }
+});
+
+// ---- Opening moves ------------------------------------------------------
+
+const openingRolls = OPENING_GROUPS.flatMap(group => group.rolls);
+const nameOfRoll = ({ dice }) => dice.join('-');
+const resultOf = play => keyOf(applyMoves(startBoard(), 0, parsePlay(play)));
+
+test('openings: a play is read into moves, a running checker as one arrow', () => {
+  equal(parsePlay('24/13'), [[24, 13]], 'running');
+  equal(parsePlay('8/5 6/5'), [[8, 5], [6, 5]], 'two checkers');
+  equal(parsePlay('13/3(2)'), [[13, 3], [13, 3]], 'two the same');
+  equal(parsePlay('24/18(2) 13/7(2)'), [[24, 18], [24, 18], [13, 7], [13, 7]], 'four');
+});
+
+test('openings: all 21 rolls are there, once each, the larger die first', () => {
+  const names = openingRolls.map(nameOfRoll);
+  equal(new Set(names).size, 21, 'different rolls');
+  for (const { dice: [high, low] } of openingRolls) if (high < low) throw new Error(`${high}-${low}`);
+  equal(OPENING_GROUPS.at(-1).rolls.map(nameOfRoll), ['6-6', '5-5', '4-4', '3-3', '2-2', '1-1'], 'doubles');
+});
+
+test('openings: every play listed is legal from the start, and no two are the same', () => {
+  for (const entry of openingRolls) {
+    const legal = new Set(legalTurns(startBoard(), 0, entry.dice).map(turn => keyOf(turn.board)));
+    const plays = [entry.best, ...entry.also];
+    for (const play of plays) if (!legal.has(resultOf(play))) throw new Error(`${nameOfRoll(entry)}: ${play} is not legal`);
+    equal(new Set(plays.map(resultOf)).size, plays.length, `${nameOfRoll(entry)} plays`);
+  }
+});
+
+test('openings: the Hard computer plays one of the plays listed, so Hint agrees with the guide', () => {
+  const differences = [];
+  for (const target of [1, 5]) {
+    for (const entry of openingRolls) {
+      const move = bestTurn(matchAt(startBoard(), 0, entry.dice, { target }), 0).moves;
+      const listed = [entry.best, ...entry.also];
+      if (!listed.map(resultOf).includes(keyOf(applyMoves(startBoard(), 0, move)))) differences.push(`${nameOfRoll(entry)} to ${target}: ${moveText(startBoard(), 0, move)}`);
+    }
+  }
+  equal(differences, [], 'not listed');
 });
 
 // ---- Wi-Fi --------------------------------------------------------------
@@ -949,7 +1112,7 @@ test('celebration: everything has gone within six seconds, and stays gone', () =
 // whether it sounds good, only that it is there, bounded and not distorted.
 // Effects are short, except the fanfare for a win and the ring of its hall.
 const LONGEST = { win: 4.5 };
-for (const name of SOUNDS) {
+for (const name of wanted('sound:') ? SOUNDS : []) {
   try {
     const rate = 44100;
     const context = new OfflineAudioContext(1, rate * 5, rate);
@@ -995,7 +1158,7 @@ for (const [a, b, games, atLeast] of [['hard', 'easy', 120, 0.8], ['hard', 'medi
     if (rate < atLeast) throw new Error(`${a} won only ${(rate * 100).toFixed(1)}%`);
   });
 }
-notes.push(`self-play took ${Math.round(performance.now() - started)} ms`);
+if (wanted('self-play:')) notes.push(`self-play took ${Math.round(performance.now() - started)} ms`);
 Math.random = realRandom;
 
 // ---- Report -------------------------------------------------------------

@@ -54,16 +54,17 @@ function tone(context, at, { length, pitch, glide = 1, gain, wave = 'sine' }) {
 }
 
 const EFFECTS = {
-  // The dice shaken in the cup: quick, uneven clicks.
+  // The dice shaken in the cup, until they are thrown: quick, uneven clicks.
   shake(context, at) {
-    for (let t = 0; t < 0.34; t += 0.022 + Math.random() * 0.02) {
+    for (let t = 0; t < 0.2; t += 0.022 + Math.random() * 0.02) {
       burst(context, at + t, { length: 0.014, pitch: 2600 + Math.random() * 2200, gain: 0.35 + Math.random() * 0.35 });
     }
   },
 
-  // The dice landing: a clack each, then a smaller bounce.
+  // The dice landing and bouncing to rest, as their flight goes (dice.js): a
+  // clack for each die at each bounce, smaller each time.
   roll(context, at) {
-    for (const [start, gain] of [[0, 0.85], [0.055, 0.75], [0.13, 0.4], [0.19, 0.25]]) {
+    for (const [start, gain] of [[0, 0.85], [0.06, 0.75], [0.216, 0.5], [0.276, 0.42], [0.36, 0.26], [0.42, 0.2]]) {
       burst(context, at + start, { length: 0.03, pitch: 3600, sweep: 0.7, gain });
     }
     tone(context, at, { length: 0.06, pitch: 520, glide: 0.6, gain: 0.14, wave: 'triangle' });

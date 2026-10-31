@@ -48,6 +48,12 @@ export const BOARD = {
 export const STACK = 5; // checkers shown on a point; more are counted on the fifth
 export const BAR_STACK = 4;
 
+// The strip across the middle of the board that checkers never reach, however
+// high they stack: between the fifth checkers of the two rows. The dice keep
+// to it, so they never cover a checker.
+const REACH = (STACK - 1) * POINT + POINT / 2 + BOARD.radius;
+export const STRIP = { top: TOP + REACH, bottom: BOTTOM - REACH };
+
 export const isTopRow = n => n >= 13;
 
 // Which column, counted from the left of the whole board, holds point n.

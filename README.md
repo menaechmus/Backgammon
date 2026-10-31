@@ -10,15 +10,16 @@ It is a static page: plain HTML, CSS and JavaScript modules, with no build step.
 - **Wi-Fi** on the menu lets two people play on their own phones (see [Wi-Fi games](#wi-fi-games)). Each types their name. One taps **Host a game**, and a four-letter code appears. The other taps **Join a game** and types it, or opens the link that **Share link** sends. The host taps **Start** once both are in.
 - **Match to** sets the match length. A single game scores 1 point, a gammon 2 and a backgammon 3, times the doubling cube. **Doubling cube** switches the cube on or off; a 1-point match never uses it. The Crawford rule applies: nobody may double in the game after a side first comes within one point of winning.
 - Every game starts with an opening roll, one die each, and the higher plays both. Press **Roll**, or tap the dice, to roll.
-- Tap a checker, and the places it may go light up: tap one to move there, or drag the checker there. A checker on the bar is picked up for you, as it must come in first. A move that uses both dice is offered in one tap when every way of making it ends the same.
+- Checkers that can move have a bright ring. Tap one, and the places it may go light up, with a ring where it would land: tap one to move there, or drag the checker there. A checker on the bar is picked up for you, as it must come in first. A move that uses both dice is offered in one tap when every way of making it ends the same.
 - **Undo** takes back the moves of the turn until you press **Done**. When no move is possible, the prompt says so and Done ends the turn.
 - **Double** offers the cube before you roll. When doubled, **Take** plays on at twice the stakes and **Pass** gives up the game at the stakes before.
 - **Hint** shows the strongest move as arrows on the board and says what it does, or the right cube decision. It can be switched off on the menu.
 - The small number under each name is that side's pip count: how far its checkers still have to go.
-- Each new game sets out the checkers with a short animation, the dice tumble, and the computer's checkers slide into place one at a time. Tap anywhere to skip any of these.
+- Each new game sets out the checkers with a short animation, the dice roll onto the board from the thrower's side and stop in the strip across the middle that checkers never reach, and the computer's checkers slide into place one at a time. Tap anywhere to skip any of these.
 - Winning a match is celebrated with fireworks, confetti and a brass fanfare (the same as Cribbage's) before the results appear. Tap to skip it.
 - Sound effects can be muted with the speaker button, the Sound setting on the menu, or `M`.
 - Keyboard: the arrow keys move between your checkers and then the places a picked-up checker may go, `Space` picks up and puts down, `Enter` presses the main button (Roll, Done, Take, Next game), `U` or `Backspace` undoes, `D` doubles, `H` asks for a hint and `M` mutes.
+- **How to play** has the rules and, on its **Opening moves** tab, the best play for all 21 rolls, grouped by the idea behind them. Tap a roll, or step through them with ‹ and ›, to see it on a small board with arrows, why it works, and any close alternatives, which can be tapped too.
 - **Statistics** keeps your record against each computer level, with your games, gammons and backgammons, and matches between people (on one device or over Wi-Fi) by name.
 - The **i** button on the menu shows which version is running.
 
@@ -38,6 +39,18 @@ Each person plays on their own phone, and one phone, the host's, keeps the match
 - At the end each phone records the match in its own **Statistics**, under "Between people". Only the host can start another match.
 - A phone running an older copy of the game is asked to reload.
 - PeerJS 1.5.5 (MIT licence, see `js/vendor/LICENSE-peerjs.txt`) is the unchanged `peerjs.min.js` from <https://github.com/peers/peerjs>.
+
+## The dice
+
+Every die comes from the browser's secure random generator (`crypto.getRandomValues`), with each face exactly as likely as the others.
+
+Any browser, including a phone's, can check its own dice at [tests.html?only=dice](https://menaechmus.github.io/Backgammon/tests.html?only=dice). The page rolls 600,000 times, then checks all 36 outcomes, each face, and whether a roll depends on the one before. It also prints how often each double came up.
+
+A given double, such as 5-5, comes up about one roll in 36, or 2.78%. A game has many rolls, so 5-5 appears about twice a game on average, and at least once in about seven games out of eight. Doubles also stand out, because they show as four dice.
+
+## Opening moves
+
+The first-move plays in the guide are those of published computer rollouts: Tom Keith's at <https://bkgm.com/openings.html>, and Wikipedia's [Backgammon opening theory](https://en.wikipedia.org/wiki/Backgammon_opening_theory). The wording is this game's own. Doubles cannot be a first move, so the guide gives the usual plays for a second turn, and these depend on what the other side did first. The tests check that every play is legal and that the Hard computer's choice from the start position is always one of those listed.
 
 ## The computer
 
@@ -72,6 +85,8 @@ Before pushing a change, raise `VERSION` and `RELEASED` at the top of `js/ui.js`
 | `index.html`, `css/style.css` | The page and its styles |
 | `js/game.js` | The rules: the board, legal turns, the cube and the match, as a plain match object and the actions that change it |
 | `js/board.js` | Board geometry: where each point, checker, die and the cube sit, and what a tap lands on |
+| `js/dice.js` | Dice thrown onto the board: where each lands and how it gets there, and the 3D cubes that show it |
+| `js/openings.js` | The best opening play for each roll, for the How to play box |
 | `js/neural.js` | The network that judges positions: its inputs and outputs, and how its weights are stored |
 | `js/weights.js` | The trained weights |
 | `js/ai.js` | The computer's three levels, the match equity table, cube decisions and hints |
@@ -84,4 +99,4 @@ Before pushing a change, raise `VERSION` and `RELEASED` at the top of `js/ui.js`
 | `js/wifi.js` | A Wi-Fi game between two phones: seats, what each phone is sent, and the messages between the host and the other |
 | `js/vendor/` | PeerJS, and its licence |
 | `js/ui.js` | Drawing, input, animation, Wi-Fi games and storage |
-| `tests.html` | Tests for the rules, the board, the network, the computer, Wi-Fi games, statistics, the celebration and sound |
+| `tests.html` | Tests for the rules, the board, the network, the computer, the dice and how they are thrown, the opening moves, Wi-Fi games, statistics, the celebration and sound; `?only=dice` runs just one group |

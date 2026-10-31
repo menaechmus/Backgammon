@@ -172,7 +172,11 @@
 
 <div id="rules" class="overlay" hidden>
   <div class="dialog wide">
-    <h2>How to play</h2>
+    <div class="choice guide-tabs" id="guide-tabs">
+      <button data-tab="guide-rules" aria-pressed="true">How to play</button>
+      <button data-tab="guide-openings" aria-pressed="false">Opening moves</button>
+    </div>
+    <div id="guide-rules" class="stack">
     <ol class="rules">
       <li><b>The race.</b> Each side has fifteen checkers. Bring all of yours into your home board, the bottom right quarter, and then bear them off. Yours move round the board anticlockwise: along the top from the right, down the left, and along the bottom to the right.</li>
       <li><b>Moving.</b> Roll two dice and move a checker the number shown on each; the same checker may move twice. Doubles are played four times. A checker may stop on any point not held by two or more of the other side's.</li>
@@ -185,6 +189,15 @@
     </ol>
     <p class="muted">Wi-Fi: each of you plays on your own phone. One chooses Wi-Fi on the menu, types a name and taps Host a game; the other chooses Wi-Fi, taps Join a game and enters the four letters on the host's screen, or opens the link the host shares. The host's match length, cube and hints settings apply to both. A phone that drops out comes back by itself, and while it is away the host can play for it.</p>
     <p class="muted">Tap a checker, and the places it may go light up; tap one to move there, or drag the checker. Undo takes back moves until you press Done. Tap anywhere to skip an animation or a celebration. On a keyboard: the arrow keys and Space move checkers, Enter presses the main button, U undoes, D doubles, H asks for a hint and M mutes the sound.</p>
+    </div>
+    <div id="guide-openings" class="openings" hidden>
+      <div id="study-board" class="study-side"></div>
+      <div class="stack">
+        <div id="study" class="stack"></div>
+        <div id="roll-groups" class="roll-groups"></div>
+        <p class="muted">These are the plays that published computer rollouts rate highest, for a game at even stakes; the match score and your own style can change them. 13/7 moves a checker from point 13 to point 7, and (2) means two checkers make that move.</p>
+      </div>
+    </div>
     <button class="btn primary" data-close>Got it</button>
   </div>
 </div>

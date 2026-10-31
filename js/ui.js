@@ -10,20 +10,21 @@ import { pickTurn, shouldDouble, shouldTake, hint } from './ai.js';
 import { emptyStats, loadStats, recordMatch } from './stats.js';
 import { playSound, setMuted, unlockSound } from './sound.js';
 import { startParty } from './celebrate.js';
-import { setupInput, destKey } from './input.js';
+import { setupInput } from './input.js';
+import { planThrow, throwDice, dieFace, THROW_TOTAL_MS, FIRST_BOUNCE_MS } from './dice.js';
+import { OPENING_GROUPS, parsePlay } from './openings.js';
 import { openRoom, joinRoom, cleanCode, CODE_LENGTH } from './net.js';
 import { createHost, createGuest, cleanName, sameState, deniedText, MAX_PLAYERS, NAME_LENGTH } from './wifi.js';
 
 // Shown in the About box. Bump both with every release: a browser still
 // running a cached copy of this file then shows the old number.
-const VERSION = '1.1.0';
-const RELEASED = '29 October 2026';
+const VERSION = '1.2.0';
+const RELEASED = '30 October 2026';
 
 const AI_DELAY = 800; // the computer's pause before it rolls, doubles or answers a double
 const AI_MOVE_DELAY = 450; // and after its dice land, before its first checker moves
-const ROLL_MS = 560; // the dice tumbling before they land
-const FACE_MS = 70; // how often a tumbling die shows a new face
 const OPENING_HOLD_MS = 650; // the opening dice stay up this long once they land
+const EXTRA_DICE_MS = 220; // the other two dice of a double appearing, once two have landed
 const MOVE_MS = 280; // a checker sliding to its next place
 const MOVE_GAP_MS = 140; // between one of the computer's checkers and the next
 const OWN_MS = 170; // a checker you send, after you tap where it goes
@@ -99,6 +100,7 @@ let tip = null; // the last hint: { moves, text } or { cube, text }
 let messages = []; // what the last action did, in words
 let turns = null; // the legal turns for the roll being played here, worked out once
 let show = null; // an animation in progress (see Animation below)
+let lying = null; // where the dice of the roll being played came to rest: { key, dice }
 let celebrating = 0; // timer while a win is celebrated and the box waits
 let party = null; // the fireworks and confetti, which outlast the celebration a little
 let skipClick = false; // the tap that skipped an animation should do nothing else
@@ -209,26 +211,21 @@ function movable() {
 const view = (side, p) => (side === bottom() ? p : 25 - p);
 const fromView = (side, n) => (side === bottom() ? n : 25 - n);
 
-const DIE_PIPS = {
-  1: [[0, 0]],
-  2: [[-5.5, -5.5], [5.5, 5.5]],
-  3: [[-5.5, -5.5], [0, 0], [5.5, 5.5]],
-  4: [[-5.5, -5.5], [5.5, -5.5], [-5.5, 5.5], [5.5, 5.5]],
-  5: [[-5.5, -5.5], [5.5, -5.5], [0, 0], [-5.5, 5.5], [5.5, 5.5]],
-  6: [[-5.5, -5.5], [5.5, -5.5], [-5.5, 0], [5.5, 0], [-5.5, 5.5], [5.5, 5.5]],
-};
-
 const at = (x, y) => `transform: translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`;
 
-function dieHtml(side, value, x, y, classes = '') {
-  const pips = DIE_PIPS[value].map(([px, py]) => `<circle cx="${px}" cy="${py}" r="2.3"/>`).join('');
-  const half = BOARD.die / 2;
-  return `<g class="die side${side} ${classes}" style="${at(x, y)}"><g class="face"><rect x="${-half}" y="${-half}" width="${BOARD.die}" height="${BOARD.die}" rx="4.5"/>${pips}</g></g>`;
+function dieHtml(side, value, x, y, tilt, classes = '') {
+  return `<g class="die side${side} ${classes}" style="${at(x, y)} rotate(${tilt.toFixed(1)}deg)"><g class="face">${dieFace(value)}</g></g>`;
 }
+
+// A bright ring with a dark edge, which shows against every colour on the
+// board. `classes` are a checker's marks: one that may move has a ring.
+const ringHtml = (radius, x = 0, y = 0) =>
+  `<circle class="ring-edge" cx="${x}" cy="${y}" r="${radius}"/><circle class="ring-line" cx="${x}" cy="${y}" r="${radius}"/>`;
 
 function checkerHtml(side, where, k, [x, y], count, classes) {
   const label = count ? `<text dy="0.36em">${count}</text>` : '';
-  return `<g class="checker side${side}${classes}" data-key="${side}:${where}:${k}" style="${at(x, y)}"><circle r="${BOARD.radius}"/><circle class="inner" r="${BOARD.radius - 4}"/>${label}</g>`;
+  const ring = classes ? ringHtml(BOARD.radius - 0.6) : '';
+  return `<g class="checker side${side}${classes}" data-key="${side}:${where}:${k}" style="${at(x, y)}"><circle r="${BOARD.radius}"/><circle class="inner" r="${BOARD.radius - 4}"/>${ring}${label}</g>`;
 }
 
 // The board as it should look now: during an animation, as the animation has
@@ -240,8 +237,8 @@ function shownBoard() {
 }
 
 // The static board: frame, playing surfaces, points, bar, trays and the point
-// numbers. The checkers, dice and cube go in the layers above.
-function drawBoard() {
+// numbers, with `layers` of whatever goes on top.
+function boardHtml(layers) {
   const { width, height, quarters, bar, trays } = BOARD;
   const rect = ({ x, y, width: w, height: h }, cls) => `<rect class="${cls}" x="${x}" y="${y}" width="${w}" height="${h}"/>`;
   let points = '';
@@ -251,22 +248,34 @@ function drawBoard() {
     const [x, y] = labelXY(n);
     labels += `<text x="${x}" y="${y}" data-n="${n}">${n}</text>`;
   }
-  $('board').innerHTML =
+  return (
     `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Backgammon board">` +
     `<rect class="frame" width="${width}" height="${height}" rx="10"/>` +
     quarters.map(q => rect(q, 'surface')).join('') +
     rect(bar, 'bar') +
     rect(trays.top, 'tray') +
     rect(trays.bottom, 'tray') +
-    `<g class="points">${points}</g><g class="labels">${labels}</g>` +
-    '<g class="marks"></g><g class="pieces"></g><g class="hints"></g><g class="drag-layer"></g></svg>';
+    `<g class="points">${points}</g><g class="labels">${labels}</g>${layers}</svg>`
+  );
+}
+
+// The table's board. The checkers, dice and cube go in the layers above the
+// static board, and dice in the air in a page layer over all of it.
+function drawBoard() {
+  $('board').innerHTML =
+    boardHtml('<g class="marks"></g><g class="pieces"></g><g class="landings"></g><g class="hints"></g><g class="drag-layer"></g>') +
+    '<div class="dice-air" aria-hidden="true"></div>';
   $('scores').innerHTML = [0, 1]
     .map(side => `<div class="score" data-side="${side}"><i></i><span class="who"><span class="name"></span><small class="pips"></small></span><b class="points"></b></div>`)
     .join('');
 }
 
+// Tells the dice of one roll from the next.
+const rollKey = () => `${match.id}:${match.gameNo}:${match.turn}:${match.dice}`;
+
 // Which dice to draw: those of the animation, or of the roll being played,
-// each { side, value, used, rolling }.
+// each { side, value, used, extra, rest }. `rest` is where a thrown die came to
+// rest, { x, y, tilt }; without it, as after a reload, the dice lie in line.
 function diceNow() {
   if (show?.dice) return show.dice;
   if (match.phase !== 'move' || !match.dice.length) return [];
@@ -278,7 +287,8 @@ function diceNow() {
     const i = values.findIndex((value, j) => value === move.die && !used[j]);
     if (i >= 0) used[i] = true;
   }
-  return values.map((value, i) => ({ side: match.turn, value, used: Boolean(used[i]) }));
+  const rests = lying?.key === rollKey() ? lying.dice : [];
+  return values.map((value, i) => ({ side: match.turn, value, used: Boolean(used[i]), rest: rests[i] }));
 }
 
 // Where the cube is, and what it shows.
@@ -335,14 +345,15 @@ function piecesHtml(board) {
   const bySide = [0, 1].map(side => dice.filter(die => die.side === side));
   for (const group of bySide) {
     group.forEach((die, i) => {
-      const [x, y] = diceXY(die.side === bottom(), group.length, i);
-      html += dieHtml(die.side, die.value, x, y, [die.used && 'used', die.rolling && 'rolling'].filter(Boolean).join(' '));
+      const [x, y] = die.rest ? [die.rest.x, die.rest.y] : diceXY(die.side === bottom(), group.length, i);
+      html += dieHtml(die.side, die.value, x, y, die.rest?.tilt ?? 0, [die.used && 'used', die.extra && 'extra'].filter(Boolean).join(' '));
     });
   }
   return html + cubeHtml();
 }
 
-// The places the picked checker may go, lit up.
+// The places the picked checker may go, lit up under the checkers. The dark
+// edge keeps the bright outline clear on pale points and dark ones alike.
 function marksHtml() {
   if (picked === null || !canAct() || match.phase !== 'move') return '';
   const mover = match.turn;
@@ -350,29 +361,49 @@ function marksHtml() {
     .map(({ to }) => {
       if (to === OFF) {
         const tray = BOARD.trays[mover === bottom() ? 'bottom' : 'top'];
-        const keyed = cursor === OFF ? ' cursor' : '';
-        return `<rect class="dest${keyed}" data-dest="off" x="${tray.x}" y="${tray.y}" width="${tray.width}" height="${tray.height}" rx="4"/>`;
+        const box = `x="${tray.x}" y="${tray.y}" width="${tray.width}" height="${tray.height}" rx="4"`;
+        return `<rect class="dest-edge" ${box}/><rect class="dest${cursor === OFF ? ' cursor' : ''}" data-dest="off" ${box}/>`;
       }
       const n = view(mover, to);
-      return `<path class="dest${cursor === to ? ' cursor' : ''}" data-dest="p${n}" d="${trianglePath(n)}"/>`;
+      const shape = `d="${trianglePath(n)}"`;
+      return `<path class="dest-edge" ${shape}/><path class="dest${cursor === to ? ' cursor' : ''}" data-dest="p${n}" ${shape}/>`;
     })
     .join('');
 }
 
-// A hint's moves as arrows from each checker to where it goes.
-function hintsHtml(board) {
-  if (!tip?.moves?.length || match.phase !== 'move') return '';
+// A ring where the picked checker would land, over the checkers: a point that
+// holds some hides its lit triangle, and on a lone checker of the other side
+// the ring shows the hit.
+function landingsHtml(board) {
+  if (picked === null || !canAct() || match.phase !== 'move') return '';
   const mover = match.turn;
+  return reachable(picked)
+    .filter(({ to }) => to !== OFF)
+    .map(({ to }) => {
+      const [x, y] = placeOf(mover, to, board[mover][to]);
+      return `<g class="landing${cursor === to ? ' cursor' : ''}">${ringHtml(BOARD.radius - 1.2, x, y)}</g>`;
+    })
+    .join('');
+}
+
+// Moves as arrows from each checker to where it goes, on a board of `side`'s.
+function arrowsHtml(board, side, moves, id) {
   const counts = board.map(half => [...half]);
   let html = '';
-  for (const [from, to] of tip.moves) {
-    const start = placeOf(mover, from, counts[mover][from] - 1);
-    counts[mover][from]--;
-    const end = placeOf(mover, to, counts[mover][to]);
-    counts[mover][to]++;
-    html += `<line x1="${start[0]}" y1="${start[1]}" x2="${end[0]}" y2="${end[1]}" marker-end="url(#arrow)"/>`;
+  for (const [from, to] of moves) {
+    const start = placeOf(side, from, counts[side][from] - 1);
+    counts[side][from]--;
+    const end = placeOf(side, to, counts[side][to]);
+    counts[side][to]++;
+    html += `<line x1="${start[0]}" y1="${start[1]}" x2="${end[0]}" y2="${end[1]}" marker-end="url(#${id})"/>`;
   }
-  return `<defs><marker id="arrow" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="4" markerHeight="4" orient="auto"><path d="M0 0L10 5L0 10z"/></marker></defs>${html}`;
+  return `<defs><marker id="${id}" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="4" markerHeight="4" orient="auto"><path d="M0 0L10 5L0 10z"/></marker></defs>${html}`;
+}
+
+// A hint's moves.
+function hintsHtml(board) {
+  if (!tip?.moves?.length || match.phase !== 'move') return '';
+  return arrowsHtml(board, match.turn, tip.moves, 'arrow');
 }
 
 // Where the kth checker of `side` on its point p (or the bar, or off) sits.
@@ -411,9 +442,10 @@ function render() {
   const svg = $('board').querySelector('svg');
   svg.querySelector('.pieces').innerHTML = piecesHtml(board);
   svg.querySelector('.marks').innerHTML = marksHtml();
+  svg.querySelector('.landings').innerHTML = landingsHtml(board);
   svg.querySelector('.hints').innerHTML = hintsHtml(board);
 
-  $('events').textContent = messages.join(' ');
+  $('events').textContent = show?.hush ? '' : messages.join(' ');
   const [prompt, warn] = tip ? [tip.text, false] : promptText();
   $('prompt').textContent = prompt;
   $('prompt').classList.toggle('tip', Boolean(tip));
@@ -588,13 +620,12 @@ function statsHtml() {
 // the end, where the match already is.
 
 function runShow(steps, before) {
-  show = { board: before.board, dice: null, cube: null, prompt: '', steps, timer: 0, ticker: 0 };
+  show = { board: before.board, dice: before.dice, cube: null, prompt: '', steps, timer: 0 };
   nextStep();
 }
 
 function nextStep() {
   if (!show) return;
-  clearInterval(show.ticker);
   const step = show.steps.shift();
   if (!step) {
     endShow();
@@ -606,11 +637,14 @@ function nextStep() {
   show.timer = setTimeout(nextStep, step.wait ?? 0);
 }
 
+// Takes any dice in the air off the board.
+const clearThrow = () => $('board').querySelector('.dice-air')?.replaceChildren();
+
 // Also called early, when a tap or key skips the animation.
 function endShow() {
   if (!show) return;
   clearTimeout(show.timer);
-  clearInterval(show.ticker);
+  clearThrow();
   show = null;
   finish();
 }
@@ -669,32 +703,40 @@ function moveStep(side, from, to) {
   };
 }
 
-// Dice tumbling, then landing: `dice` are [{ side, value }].
-function rollStep(dice, hold) {
-  return {
-    change() {
-      show.dice = dice.map(die => ({ ...die, rolling: true, real: die.value }));
-      show.prompt = '';
+// Dice thrown onto the board, then lying where they came to rest: `rolled` are
+// [{ side, value }], four of one value for a double, of which two are thrown
+// and two appear once those have landed. `keep` marks the dice of the roll to
+// be played, which stay as they lie for the turn.
+function rollSteps(rolled, hold, keep = false) {
+  let dice = [];
+  return [
+    {
+      change() {
+        dice = [0, 1].flatMap(side => {
+          const mine = rolled.filter(die => die.side === side);
+          return mine.length ? planThrow(side === bottom(), mine.length).map((plan, i) => ({ ...plan, ...mine[i] })) : [];
+        });
+        if (keep) lying = { key: rollKey(), dice };
+        show.dice = [];
+        show.prompt = '';
+        show.hush = true; // the words wait for the dice
+      },
+      animate() {
+        playSound('shake');
+        playSound('roll', FIRST_BOUNCE_MS / 1000);
+        throwDice($('board').querySelector('.dice-air'), dice.filter(die => die.from));
+      },
+      wait: THROW_TOTAL_MS,
     },
-    animate() {
-      playSound('shake');
-      const tumble = () => {
-        show.dice = show.dice.map(die => ({ ...die, value: 1 + Math.floor(Math.random() * 6) }));
-        render();
-      };
-      tumble();
-      show.ticker = setInterval(tumble, FACE_MS);
-      const rolling = show;
-      setTimeout(() => {
-        if (show !== rolling) return;
-        clearInterval(show.ticker);
-        show.dice = show.dice.map(die => ({ side: die.side, value: die.real }));
-        render();
-        playSound('roll');
-      }, ROLL_MS);
+    {
+      change() {
+        clearThrow();
+        show.dice = dice.map(die => ({ side: die.side, value: die.value, rest: die, extra: !die.from }));
+        show.hush = false;
+      },
+      wait: hold,
     },
-    wait: ROLL_MS + hold,
-  };
+  ];
 }
 
 // The checkers set out for a new game, flying from their trays one after another.
@@ -705,6 +747,7 @@ function setupStep() {
       show.dice = [];
       show.cube = { place: 'centre', value: 1 };
       show.prompt = 'Setting out the checkers…';
+      show.hush = true;
     },
     animate() {
       playSound('setup');
@@ -748,14 +791,14 @@ function stepsFor(events, own) {
     if (event.type === 'opening') {
       if (!steps.length) steps.push(setupStep());
       const [a, b] = event.dice;
-      steps.push(rollStep([{ side: 0, value: a }, { side: 1, value: b }], OPENING_HOLD_MS));
+      steps.push(...rollSteps([{ side: 0, value: a }, { side: 1, value: b }], OPENING_HOLD_MS));
     } else if (event.type === 'start') {
       const [a, b] = event.dice;
       steps.push({ change: () => (show.dice = [{ side: event.side, value: a }, { side: event.side, value: b }]), wait: 200 });
     } else if (event.type === 'roll') {
       const [a, b] = event.dice;
       const values = a === b ? [a, a, a, a] : [a, b];
-      steps.push(rollStep(values.map(value => ({ side: event.side, value })), 0));
+      steps.push(...rollSteps(values.map(value => ({ side: event.side, value })), a === b ? EXTRA_DICE_MS : 0, true));
     } else if (event.type === 'move' && !own) {
       steps.push(moveStep(event.side, event.from, event.to));
     } else if (event.type === 'double') {
@@ -810,8 +853,9 @@ function soundEvents(events) {
   }
 }
 
-// What the match looked like before a change.
-const snapshot = () => ({ board: match.board.map(half => [...half]), phase: match.phase, turn: match.turn, gameNo: match.gameNo, actor: actor() });
+// What the match looked like before a change. The dice stay on the board
+// while the checkers they moved are shown moving.
+const snapshot = () => ({ board: match.board.map(half => [...half]), dice: diceNow(), phase: match.phase, turn: match.turn, gameNo: match.gameNo, actor: actor() });
 
 // Runs one action on the match, then shows what it did. `own` is a turn
 // whose checkers were moved here, which need not be shown again.
@@ -1595,7 +1639,7 @@ function showMenu() {
   clearTimeout(aiTimer);
   if (show) {
     clearTimeout(show.timer);
-    clearInterval(show.ticker);
+    clearThrow();
     show = null;
   }
   input?.cancel();
@@ -1675,6 +1719,49 @@ function showStats() {
   $('stats').hidden = false;
 }
 
+// ---- Opening moves, in How to play ----------------------------------------
+
+const OPENING_ROLLS = OPENING_GROUPS.flatMap(group => group.rolls.map(roll => ({ ...roll, group })));
+let studied = OPENING_ROLLS[0]; // the roll on show
+let studiedPlay = studied.best; // and which of its plays
+
+const rollName = ({ dice }) => dice.join('-');
+
+function drawRollGroups() {
+  const icon = value => `<svg viewBox="-12 -12 24 24" aria-hidden="true">${dieFace(value)}</svg>`;
+  const chip = roll => `<button class="roll-chip" data-roll="${rollName(roll)}" aria-label="${rollName(roll)}">${roll.dice.map(icon).join('')}</button>`;
+  $('roll-groups').innerHTML = OPENING_GROUPS.map(group => `<section><h3>${group.title}</h3><div class="roll-chips">${group.rolls.map(chip).join('')}</div></section>`).join('');
+}
+
+function studyRoll(roll) {
+  studied = roll;
+  studiedPlay = roll.best;
+  drawStudy();
+}
+
+// The start of a game with the chosen play as arrows, and what it does. Your
+// side is at the bottom, as at the table.
+function drawStudy() {
+  const side = bottom();
+  const board = startBoard();
+  let checkers = '';
+  for (const owner of [0, 1]) {
+    for (let p = 1; p <= 24; p++) {
+      for (let k = 0; k < board[owner][p]; k++) checkers += checkerHtml(owner, 'study', k, checkerXY(view(owner, p), k), 0, '');
+    }
+  }
+  const arrows = arrowsHtml(board, side, parsePlay(studiedPlay), 'study-arrow');
+  const stepper = (step, label, mark) => `<button class="icon-btn" data-step="${step}" aria-label="${label}">${mark}</button>`;
+  $('study-board').innerHTML =
+    `<div class="study-nav">${stepper(-1, 'Previous roll', '‹')}<p><b>${rollName(studied)}</b><small>${studied.group.title}</small></p>${stepper(1, 'Next roll', '›')}</div>` +
+    `<div class="study-board">${boardHtml(`<g>${checkers}</g><g class="hints">${arrows}</g>`)}</div>`;
+  const playChip = play => `<button class="play-chip" data-play="${play}" aria-pressed="${play === studiedPlay}">${play}</button>`;
+  $('study').innerHTML =
+    `<p class="study-plays">${playChip(studied.best)}${studied.also.length ? ` <span class="muted">Also good:</span> ${studied.also.map(playChip).join(' ')}` : ''}</p>` +
+    `<p>${studied.why}</p><p class="muted">${studied.group.idea}</p>`;
+  for (const chip of $('roll-groups').querySelectorAll('[data-roll]')) chip.setAttribute('aria-pressed', chip.dataset.roll === rollName(studied));
+}
+
 // ---- Wiring -------------------------------------------------------------
 
 $('menu').addEventListener('click', event => {
@@ -1731,6 +1818,39 @@ $('btn-confirm').addEventListener('click', () => {
 $('btn-stats').addEventListener('click', showStats);
 $('btn-rules').addEventListener('click', () => {
   $('rules').hidden = false;
+});
+drawRollGroups();
+$('guide-tabs').addEventListener('click', event => {
+  const tab = event.target.closest('[data-tab]');
+  if (!tab) return;
+  for (const button of $('guide-tabs').children) {
+    button.setAttribute('aria-pressed', button === tab);
+    $(button.dataset.tab).hidden = button !== tab;
+  }
+  const openings = tab.dataset.tab === 'guide-openings';
+  $('guide-tabs').parentElement.classList.toggle('studying', openings);
+  $('rules').scrollTop = 0;
+  if (openings) drawStudy();
+});
+$('study-board').addEventListener('click', event => {
+  const step = event.target.closest('[data-step]');
+  if (!step) return;
+  const count = OPENING_ROLLS.length;
+  studyRoll(OPENING_ROLLS[(OPENING_ROLLS.indexOf(studied) + Number(step.dataset.step) + count) % count]);
+});
+// The list of rolls lies below what it shows, so a roll chosen there comes up
+// into view.
+$('roll-groups').addEventListener('click', event => {
+  const chip = event.target.closest('[data-roll]');
+  if (!chip) return;
+  studyRoll(OPENING_ROLLS.find(roll => rollName(roll) === chip.dataset.roll));
+  $('rules').scrollTo({ top: 0, behavior: reducedMotion() ? 'auto' : 'smooth' });
+});
+$('study').addEventListener('click', event => {
+  const chip = event.target.closest('[data-play]');
+  if (!chip) return;
+  studiedPlay = chip.dataset.play;
+  drawStudy();
 });
 $('about-version').textContent = `Version ${VERSION} · ${RELEASED}`;
 $('btn-about').addEventListener('click', () => {
